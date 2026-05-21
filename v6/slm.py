@@ -45,7 +45,7 @@ class DualRoleSLM:
             )
             load_kwargs["device_map"] = "auto"
         else:
-            load_kwargs["dtype"] = (
+            load_kwargs["torch_dtype"] = (
                 torch.float16 if self.device.type == "cuda" else torch.float32)
 
         if V6Config.USE_FLASH_ATTN:
