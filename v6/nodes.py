@@ -48,7 +48,7 @@ def _history_text(turns: list[dict]) -> str:
     for i, t in enumerate(turns[-V6Config.MAX_TURNS:], 1):
         lines.append(f"{i}. Q: {t.get('query', '')}")
         if t.get("intent") == "data" and t.get("answer"):
-            lines.append(f"   A: {t['answer'][:140]}")
+            lines.append(f"   A: {t.get('final_answer', '')[:140]}")
     return "\n".join(lines)
 
 
@@ -242,7 +242,7 @@ def answer_node(state: dict) -> dict:
         if caveats:
             ans += ("\n(Note: the query may not perfectly match your "
                     "request — " + caveats[0] + ".)")
-    return {"answer": ans, "trace": _trace(state, "answer: composed")}
+    return {"final_answer": ans, "trace": _trace(state, "answer: composed")}
 
 
 # ── 10. replan (loop back after a failed execution) ──────────────────────
@@ -279,7 +279,7 @@ def template_node(state: dict) -> dict:
     if not state.get("exec_ok"):
         return {"trace": _trace(state, "template: skipped (no data)")}
     res = fill_report(state["query"], state.get("rows", []),
-                      state.get("columns", []), state.get("answer", ""),
+                      state.get("columns", []), state.get("final_answer", ""),
                       state.get("entities", {}))
     if res["ok"]:
         return {"document_path": res["path"],
@@ -292,7 +292,7 @@ def email_node(state: dict) -> dict:
     if "email" not in state.get("exec_plan", []):
         return {}
     draft = compose_email_draft(
-        state["query"], state.get("answer", ""),
+        state["query"], state.get("final_answer", ""),
         state.get("rows", []), state.get("columns", []))
     return {"email_draft": draft,
             "trace": _trace(state, f"email: {draft['status']} "
@@ -321,7 +321,7 @@ def direct_answer_node(state: dict) -> dict:
         ans = ("I can't answer that — it needs a KPI or table that isn't in "
                "the database. Try revenue, ARPU, churn, subscribers, EBITDA, "
                "or OPEX/CAPEX for an Algerian wilaya.")
-    return {"answer": ans, "trace": _trace(state, f"direct_answer ({intent})")}
+    return {"final_answer": ans, "trace": _trace(state, f"direct_answer ({intent})")}
 
 
 # ── 15. clarify (low-confidence data query) ──────────────────────────────
@@ -333,12 +333,12 @@ def clarify_node(state: dict) -> dict:
     ans = ("I'm not sure which metric you mean." + extra
            + " Could you name a KPI — revenue, ARPU, churn, subscribers, "
              "EBITDA, OPEX/CAPEX — and optionally a wilaya and time period?")
-    return {"answer": ans, "trace": _trace(state, "clarify: asked to rephrase")}
+    return {"final_answer": ans, "trace": _trace(state, "clarify: asked to rephrase")}
 
 
 # ── 16. finalize (append capability notes, update memory) ────────────────
 def finalize_node(state: dict) -> dict:
-    answer = state.get("answer", "")
+    answer = state.get("final_answer", "")
     notes: list[str] = []
     if state.get("chart_path"):
         notes.append(f"📊 Chart saved: {state['chart_path']}")
@@ -360,7 +360,7 @@ def finalize_node(state: dict) -> dict:
     turn = {
         "query": state["query"],
         "intent": state.get("intent", ""),
-        "answer": state.get("answer", ""),
+        "answer": state.get("final_answer", ""),
         "sql": state.get("sql", ""),
         "tables": routing.get("tables", []),
         "columns": routing.get("columns", []),
@@ -368,7 +368,7 @@ def finalize_node(state: dict) -> dict:
     turns = (list(state.get("turns", [])) + [turn])[-V6Config.MAX_TURNS:]
 
     out = {
-        "answer": answer,
+        "final_answer": answer,
         "turns": turns,
         "trace": _trace(state, "finalize: answer ready, memory updated"),
     }

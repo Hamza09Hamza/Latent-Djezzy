@@ -57,7 +57,7 @@ class AgentState(TypedDict, total=False):
     document_path: str
 
     # ── output ────────────────────────────────────────────────────────────
-    answer: str
+    final_answer: str
     errors: list[str]
     trace: list[str]             # human-readable step log for this turn
     timings: dict                # {node_name_ms: float}
@@ -87,5 +87,5 @@ def initial_state(query: str, thread_id: str = "default") -> dict:
         # capability artifacts
         "chart_path": "", "document_path": "", "email_draft": None,
         # output
-        "answer": "", "errors": [], "trace": [], "timings": {},
+        "final_answer": "", "errors": [], "trace": [], "timings": {},
     }
