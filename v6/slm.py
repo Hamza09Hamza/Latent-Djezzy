@@ -56,6 +56,22 @@ class DualRoleSLM:
             self.model.to(self.device)
         self.model.eval()
 
+        # ── Speculative decoding: load the 0.5B drafter if main model is bigger
+        # The drafter generates γ candidate tokens per step; the main model
+        # validates them all in one forward pass — free speed from the KV cache.
+        self._draft: AutoModelForCausalLM | None = None
+        draft_id = V6Config.draft_slm_id(model_id)
+        if draft_id and draft_id != model_id:
+            try:
+                draft_kwargs = {"torch_dtype": torch.float16 if self.device.type == "cuda" else torch.float32}
+                if V6Config.USE_FLASH_ATTN:
+                    draft_kwargs["attn_implementation"] = "flash_attention_2"
+                self._draft = AutoModelForCausalLM.from_pretrained(draft_id, **draft_kwargs)
+                self._draft.to(self.device)
+                self._draft.eval()
+            except Exception:
+                self._draft = None
+
         im_end = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
         self._im_end = (im_end if isinstance(im_end, int) and im_end >= 0
                         else self.tokenizer.eos_token_id)
@@ -70,9 +86,11 @@ class DualRoleSLM:
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)
-        out = self.model.generate(
-            **enc, max_new_tokens=max_new_tokens, do_sample=False,
-            pad_token_id=self.tokenizer.eos_token_id)
+        gen_kw = dict(**enc, max_new_tokens=max_new_tokens, do_sample=False,
+                      pad_token_id=self.tokenizer.eos_token_id)
+        if self._draft is not None:
+            gen_kw["assistant_model"] = self._draft
+        out = self.model.generate(**gen_kw)
         return self.tokenizer.decode(
             out[0, enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
 
@@ -86,10 +104,13 @@ class DualRoleSLM:
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)
-        out1 = self.model.generate(
+        gen_kw: dict = dict(
             **enc, max_new_tokens=max_new, do_sample=False,
             return_dict_in_generate=True, use_cache=True,
             pad_token_id=self.tokenizer.eos_token_id)
+        if self._draft is not None:
+            gen_kw["assistant_model"] = self._draft  # speculative decoding
+        out1 = self.model.generate(**gen_kw)
         router_out = self.tokenizer.decode(
             out1.sequences[0, enc.input_ids.shape[1]:],
             skip_special_tokens=True).strip()

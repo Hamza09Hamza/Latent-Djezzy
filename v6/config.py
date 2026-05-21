@@ -59,8 +59,8 @@ class V6Config:
     USE_4BIT       = _env("4BIT", "0") == "1"      # 4-bit NF4 quantization
     USE_FLASH_ATTN = _env("FLASH_ATTN", "0") == "1"
 
-    ROUTER_MAX_NEW_TOKENS = 320
-    SQLGEN_MAX_NEW_TOKENS = 256
+    ROUTER_MAX_NEW_TOKENS = 128   # routing JSON rarely exceeds 80 tokens
+    SQLGEN_MAX_NEW_TOKENS = 160   # SQL rarely exceeds 120 tokens
 
     # ── RAG encoder — frozen BGE-M3 (1024-d) ─────────────────────────────
     BGE_M3_LOCAL_DIR = os.path.join(MODELS_DIR, "bge-m3")
@@ -127,6 +127,23 @@ class V6Config:
             if os.path.isdir(path):
                 return path
         return cls.SLM_HUB_ID
+
+    @classmethod
+    def draft_slm_id(cls, main_id: str) -> str | None:
+        """Return the speculative-decoding drafter id for the given main model.
+
+        If the main model is the 0.5B, no drafter is needed (it IS the drafter).
+        Otherwise return the 0.5B Hub id so the verifier can use it.
+        """
+        if "0.5b" in main_id.lower():
+            return None
+        # prefer a local copy if present
+        for name in cls.SLM_CANDIDATES:
+            if "0.5b" in name:
+                path = os.path.join(cls.MODELS_DIR, name)
+                if os.path.isdir(path):
+                    return path
+        return "Qwen/Qwen2.5-Coder-0.5B-Instruct"
 
     @classmethod
     def bge_m3_id(cls) -> str:
