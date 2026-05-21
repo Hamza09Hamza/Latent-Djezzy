@@ -48,9 +48,6 @@ class DualRoleSLM:
             load_kwargs["torch_dtype"] = (
                 torch.float16 if self.device.type == "cuda" else torch.float32)
 
-        if V6Config.USE_FLASH_ATTN:
-            load_kwargs["attn_implementation"] = "flash_attention_2"
-
         self.model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
         if not V6Config.USE_4BIT:
             self.model.to(self.device)
@@ -64,8 +61,6 @@ class DualRoleSLM:
         if draft_id and draft_id != model_id:
             try:
                 draft_kwargs = {"torch_dtype": torch.float16 if self.device.type == "cuda" else torch.float32}
-                if V6Config.USE_FLASH_ATTN:
-                    draft_kwargs["attn_implementation"] = "flash_attention_2"
                 self._draft = AutoModelForCausalLM.from_pretrained(draft_id, **draft_kwargs)
                 self._draft.to(self.device)
                 self._draft.eval()
