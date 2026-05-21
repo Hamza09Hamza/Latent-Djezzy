@@ -1,0 +1,72 @@
+{
+  "system": {
+    "name": "LatentMind V6",
+    "description": "An agentic analytics assistant for an Algerian mobile operator. It answers natural-language questions about telecom KPIs — revenue, ARPU, churn, subscribers, profitability, OPEX and CAPEX — per wilaya, by generating and running read-only SQL. It can also chart results, draft emails to colleagues, and fill report templates with the data."
+  },
+  "business_context": [
+    {
+      "topic": "data coverage",
+      "text": "The database stores weekly KPI snapshots keyed by a week_start date column. Relative time expressions such as 'last quarter', 'last month', 'recently' or 'this year' must be resolved against the most recent available week, not against the real-world current date."
+    },
+    {
+      "topic": "geography",
+      "text": "Locations are Algerian wilayas (provinces). The dim_location table maps location_id to a wilaya name. Wilaya names are stored in French — the capital is written 'Alger', not 'Algiers'. Any query that names a wilaya is filtered through dim_location.wilaya after joining on location_id."
+    },
+    {
+      "topic": "segments",
+      "text": "KPIs are split by customer segment. The prepaid_kpi table holds prepaid metrics and postpaid_kpi holds postpaid metrics. Company-wide revenue is in global_revenue, profitability in fpa_profitability, and costs in opex_capex. When the user names no segment and the KPI exists for both, default to prepaid."
+    },
+    {
+      "topic": "revenue vocabulary",
+      "text": "The words revenue, sales, turnover, income and 'chiffre d'affaires' all refer to the total_revenue column of the global_revenue table. global_revenue is keyed by location_id like every other metric table, so filtering it by wilaya requires a join to dim_location."
+    },
+    {
+      "topic": "joins",
+      "text": "Every metric table — prepaid_kpi, postpaid_kpi, global_revenue, fpa_profitability, opex_capex — stores location as location_id. To filter or group by a wilaya name, join dim_location ON the table's location_id = dim_location.location_id. No metric table has a wilaya column of its own."
+    }
+  ],
+  "table_relationships": [
+    "prepaid_kpi.location_id references dim_location.location_id",
+    "postpaid_kpi.location_id references dim_location.location_id",
+    "global_revenue.location_id references dim_location.location_id",
+    "fpa_profitability.location_id references dim_location.location_id",
+    "opex_capex.location_id references dim_location.location_id",
+    "dim_location.wilaya carries the wilaya name; every wilaya filter goes through this column"
+  ],
+  "definitions": [
+    {
+      "term": "ARPU",
+      "text": "Average Revenue Per User — the average revenue generated per subscriber over a period. Stored in the arpu column of prepaid_kpi and postpaid_kpi. It is a per-user figure, not an aggregate."
+    },
+    {
+      "term": "churn rate",
+      "text": "The percentage of subscribers who stopped using the service during a period. Stored in the churn_rate column of prepaid_kpi and postpaid_kpi."
+    },
+    {
+      "term": "active base",
+      "text": "The number of currently active subscribers. Stored in the active_base column of prepaid_kpi and postpaid_kpi."
+    },
+    {
+      "term": "total revenue",
+      "text": "The aggregate money earned across all users in a wilaya for a week. Stored in global_revenue.total_revenue. This differs from ARPU, which is revenue per single user."
+    },
+    {
+      "term": "EBITDA",
+      "text": "Earnings Before Interest, Taxes, Depreciation and Amortization — the standard operating-profit measure. Stored in fpa_profitability.ebitda."
+    },
+    {
+      "term": "OPEX",
+      "text": "Operating Expenditure — the recurring cost of running the business. Total is in opex_capex.total_opex, split across network, marketing, distribution, support and IT."
+    },
+    {
+      "term": "CAPEX",
+      "text": "Capital Expenditure — investment in long-term assets such as network and IT. Total is in opex_capex.capex_total."
+    }
+  ],
+  "query_type_guide": [
+    "data: the question needs numbers from the database — generate SQL.",
+    "definition: the question asks what a term means — answer from the definitions above, no SQL.",
+    "greeting / meta: small talk, or a question about the assistant itself — short reply, no SQL.",
+    "unanswerable: the question needs a KPI or table that is not in the schema — ask the user to rephrase."
+  ]
+}

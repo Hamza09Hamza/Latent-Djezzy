@@ -1,0 +1,533 @@
+[
+  {
+    "id": 1,
+    "column": "churn_rate",
+    "table": "prepaid_kpi",
+    "description": "Percentage of prepaid users lost",
+    "segment": "prepaid",
+    "unit": "%",
+    "synonyms": ["churn", "désabonnement", "خسارة", "استنزاف", "customer loss", "attrition"]
+  },
+  {
+    "id": 2,
+    "column": "churn_rate",
+    "table": "postpaid_kpi",
+    "description": "Percentage of postpaid users lost",
+    "segment": "postpaid",
+    "unit": "%",
+    "synonyms": ["churn", "customer loss", "attrition rate"]
+  },
+  {
+    "id": 3,
+    "column": "arpu",
+    "table": "prepaid_kpi",
+    "description": "Average revenue per prepaid user",
+    "segment": "prepaid",
+    "unit": "DZD",
+    "synonyms": ["arpu", "revenue per user", "revenu par abonné"]
+  },
+  {
+    "id": 4,
+    "column": "arpu",
+    "table": "postpaid_kpi",
+    "description": "Average revenue per postpaid user",
+    "segment": "postpaid",
+    "unit": "DZD",
+    "synonyms": ["arpu", "revenue per user"]
+  },
+  {
+    "id": 5,
+    "column": "active_base",
+    "table": "prepaid_kpi",
+    "description": "Total prepaid subscribers",
+    "segment": "prepaid",
+    "unit": "count",
+    "synonyms": ["subscribers", "subscriber count", "abonnés", "عدد المشتركين", "user base", "active base"]
+  },
+  {
+    "id": 6,
+    "column": "active_base",
+    "table": "postpaid_kpi",
+    "description": "Total postpaid subscribers",
+    "segment": "postpaid",
+    "unit": "count",
+    "synonyms": ["subscribers", "subscriber count", "user base", "active base"]
+  },
+  {
+    "id": 7,
+    "column": "gross_adds",
+    "table": "prepaid_kpi",
+    "description": "New prepaid customer activations",
+    "segment": "prepaid",
+    "unit": "count",
+    "synonyms": ["gross adds", "new customers", "activations", "ajouts bruts", "إضافات"]
+  },
+  {
+    "id": 8,
+    "column": "gross_adds",
+    "table": "postpaid_kpi",
+    "description": "New postpaid customer activations",
+    "segment": "postpaid",
+    "unit": "count",
+    "synonyms": ["gross adds", "new customers", "activations"]
+  },
+  {
+    "id": 9,
+    "column": "net_adds",
+    "table": "prepaid_kpi",
+    "description": "Net customer growth (gross adds minus churn) for prepaid",
+    "segment": "prepaid",
+    "unit": "count",
+    "synonyms": ["net adds", "net growth", "ajouts nets", "صافي الإضافات"]
+  },
+  {
+    "id": 10,
+    "column": "net_adds",
+    "table": "postpaid_kpi",
+    "description": "Net customer growth (gross adds minus churn) for postpaid",
+    "segment": "postpaid",
+    "unit": "count",
+    "synonyms": ["net adds", "net growth"]
+  },
+  {
+    "id": 11,
+    "column": "total_recharge_revenue",
+    "table": "prepaid_kpi",
+    "description": "Total revenue from prepaid recharges",
+    "segment": "prepaid",
+    "unit": "DZD",
+    "synonyms": ["revenue", "recharge revenue", "chiffre d'affaires", "إيراد"]
+  },
+  {
+    "id": 12,
+    "column": "total_recharge_revenue",
+    "table": "postpaid_kpi",
+    "description": "Total revenue from postpaid billing",
+    "segment": "postpaid",
+    "unit": "DZD",
+    "synonyms": ["revenue", "billing revenue", "turnover"]
+  },
+  {
+    "id": 13,
+    "column": "total_revenue",
+    "table": "global_revenue",
+    "description": "Overall company total revenue",
+    "segment": "global",
+    "unit": "DZD",
+    "synonyms": ["total revenue", "company revenue", "global revenue", "recettes", "مجموع الإيرادات", "chiffre d'affaires"]
+  },
+  {
+    "id": 14,
+    "column": "recharge_rate",
+    "table": "prepaid_kpi",
+    "description": "Recharge activity rate for prepaid users",
+    "segment": "prepaid",
+    "unit": "%",
+    "synonyms": ["recharge", "recharge rate", "top-up", "taux de recharge", "معدل إعادة الشحن"]
+  },
+  {
+    "id": 15,
+    "column": "avg_data_usage_gb",
+    "table": "prepaid_kpi",
+    "description": "Average data consumption per prepaid user",
+    "segment": "prepaid",
+    "unit": "GB",
+    "synonyms": ["data usage", "data consumption", "consommation données", "استهلاك البيانات"]
+  },
+  {
+    "id": 16,
+    "column": "avg_voice_usage_min",
+    "table": "prepaid_kpi",
+    "description": "Average voice minutes per prepaid user",
+    "segment": "prepaid",
+    "unit": "min",
+    "synonyms": ["voice usage", "voice minutes", "call duration", "utilisation voix"]
+  },
+  {
+    "id": 17,
+    "column": "market_share",
+    "table": "prepaid_kpi",
+    "description": "Prepaid market share",
+    "segment": "prepaid",
+    "unit": "%",
+    "synonyms": ["market share", "share", "part de marché", "حصة السوق"]
+  },
+  {
+    "id": 18,
+    "column": "market_share",
+    "table": "global_revenue",
+    "description": "Overall market share",
+    "segment": "global",
+    "unit": "%",
+    "synonyms": ["market share", "total share", "part de marché"]
+  },
+  {
+    "id": 19,
+    "column": "revenue_b2b",
+    "table": "global_revenue",
+    "description": "B2B revenue",
+    "segment": "b2b",
+    "unit": "DZD",
+    "synonyms": ["b2b revenue", "business revenue"]
+  },
+  {
+    "id": 20,
+    "column": "revenue_data",
+    "table": "global_revenue",
+    "description": "Data service revenue",
+    "segment": "data",
+    "unit": "DZD",
+    "synonyms": ["data revenue", "data income"]
+  },
+  {
+    "id": 21,
+    "column": "revenue_voice",
+    "table": "global_revenue",
+    "description": "Voice service revenue from calls",
+    "segment": "voice",
+    "unit": "DZD",
+    "synonyms": ["voice revenue", "call revenue", "revenu voix", "revenue from voice calls"]
+  },
+  {
+    "id": 22,
+    "column": "revenue_roaming",
+    "table": "global_revenue",
+    "description": "Roaming service revenue from international and intra-Maghreb traffic",
+    "segment": "roaming",
+    "unit": "DZD",
+    "synonyms": ["roaming revenue", "international revenue", "revenu roaming", "roaming income"]
+  },
+  {
+    "id": 23,
+    "column": "revenue_b2c_prepaid",
+    "table": "global_revenue",
+    "description": "B2C prepaid segment revenue",
+    "segment": "prepaid",
+    "unit": "DZD",
+    "synonyms": ["prepaid revenue", "B2C prepaid", "revenu prépayé", "B2C prepaid revenue"]
+  },
+  {
+    "id": 24,
+    "column": "revenue_b2c_postpaid",
+    "table": "global_revenue",
+    "description": "B2C postpaid segment revenue",
+    "segment": "postpaid",
+    "unit": "DZD",
+    "synonyms": ["postpaid revenue", "B2C postpaid", "revenu postpayé", "B2C postpaid revenue"]
+  },
+  {
+    "id": 25,
+    "column": "ebitda",
+    "table": "fpa_profitability",
+    "description": "EBITDA — Earnings Before Interest, Taxes, Depreciation and Amortization, the standard operating profit measure",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["EBITDA", "operating profit", "operating earnings", "operating income"]
+  },
+  {
+    "id": 26,
+    "column": "ebitda_margin",
+    "table": "fpa_profitability",
+    "description": "EBITDA margin as percentage of total revenue",
+    "segment": "all",
+    "unit": "%",
+    "synonyms": ["EBITDA margin", "marge EBITDA", "operating margin", "EBITDA percent"]
+  },
+  {
+    "id": 27,
+    "column": "ebit",
+    "table": "fpa_profitability",
+    "description": "EBIT — Earnings Before Interest and Taxes (operating income)",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["EBIT", "operating income", "earnings before interest and taxes"]
+  },
+  {
+    "id": 28,
+    "column": "net_income",
+    "table": "fpa_profitability",
+    "description": "Net Income — bottom line profit after taxes and interest",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["net income", "net profit", "résultat net", "bottom line", "net earnings"]
+  },
+  {
+    "id": 29,
+    "column": "gross_margin",
+    "table": "fpa_profitability",
+    "description": "Gross margin — revenue minus direct cost of service",
+    "segment": "all",
+    "unit": "%",
+    "synonyms": ["gross margin", "marge brute", "gross profit margin"]
+  },
+  {
+    "id": 30,
+    "column": "ocf",
+    "table": "fpa_profitability",
+    "description": "Operating Cash Flow generated from core business operations",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["OCF", "operating cash flow", "cash flow operations", "cash-flow opérationnel"]
+  },
+  {
+    "id": 31,
+    "column": "fcf",
+    "table": "fpa_profitability",
+    "description": "Free Cash Flow — operating cash flow minus capital expenditure",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["FCF", "free cash flow", "free cash-flow"]
+  },
+  {
+    "id": 32,
+    "column": "arpu_global",
+    "table": "fpa_profitability",
+    "description": "Global ARPU across all subscriber segments combined",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["ARPU global", "company ARPU", "blended ARPU", "ARPU total"]
+  },
+  {
+    "id": 33,
+    "column": "total_opex",
+    "table": "opex_capex",
+    "description": "Total Operating Expenditure across all functional areas",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["OPEX", "operating expenditure", "operating expenses", "total OPEX", "opérations"]
+  },
+  {
+    "id": 34,
+    "column": "capex_total",
+    "table": "opex_capex",
+    "description": "Total Capital Expenditure — investment in long-term assets like network and IT",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["CAPEX", "capital expenditure", "capital investment", "total CAPEX", "investissement"]
+  },
+  {
+    "id": 35,
+    "column": "ratio_opex_to_revenue",
+    "table": "opex_capex",
+    "description": "Ratio of OPEX to total revenue, percentage",
+    "segment": "all",
+    "unit": "%",
+    "synonyms": ["OPEX ratio", "OPEX/Revenue", "ratio OPEX", "operating cost ratio"]
+  },
+  {
+    "id": 36,
+    "column": "ratio_capex_to_revenue",
+    "table": "opex_capex",
+    "description": "Ratio of CAPEX to total revenue, percentage; capital intensity",
+    "segment": "all",
+    "unit": "%",
+    "synonyms": ["CAPEX ratio", "CAPEX/Revenue", "ratio CAPEX", "capital intensity"]
+  },
+  {
+    "id": 37,
+    "column": "ontime_payment_rate",
+    "table": "postpaid_kpi",
+    "description": "Percentage of postpaid bills paid on time by the due date",
+    "segment": "postpaid",
+    "unit": "%",
+    "synonyms": ["on-time payment", "payment on time", "paiement à temps", "DPO", "bill payment rate"]
+  },
+  {
+    "id": 38,
+    "column": "dso_days",
+    "table": "postpaid_kpi",
+    "description": "Days Sales Outstanding for postpaid invoicing — average days from invoice to collection",
+    "segment": "postpaid",
+    "unit": "days",
+    "synonyms": ["DSO", "days sales outstanding", "collection period", "accounts receivable days"]
+  },
+  {
+    "id": 39,
+    "column": "avg_tenure",
+    "table": "postpaid_kpi",
+    "description": "Average tenure of postpaid contracts in months",
+    "segment": "postpaid",
+    "unit": "months",
+    "synonyms": ["tenure", "average tenure", "ancienneté", "customer lifetime"]
+  },
+  {
+    "id": 40,
+    "column": "upsell_ratio",
+    "table": "postpaid_kpi",
+    "description": "Percentage of postpaid customers upgraded to higher plans",
+    "segment": "postpaid",
+    "unit": "%",
+    "synonyms": ["upsell", "upsell ratio", "taux d'upsell", "plan upgrade rate"]
+  },
+  {
+    "id": 41,
+    "column": "migration_rate",
+    "table": "postpaid_kpi",
+    "description": "Percentage of prepaid customers migrating to postpaid contracts",
+    "segment": "postpaid",
+    "unit": "%",
+    "synonyms": ["migration rate", "prepaid to postpaid", "migration prépayé postpayé", "conversion rate"]
+  },
+  {
+    "id": 42,
+    "column": "avg_topup_value",
+    "table": "prepaid_kpi",
+    "description": "Average value per top-up transaction (Average Top-Up Value)",
+    "segment": "prepaid",
+    "unit": "DZD",
+    "synonyms": ["average top-up", "ATV", "valeur moyenne de recharge", "average recharge value"]
+  },
+  {
+    "id": 43,
+    "column": "avg_recharges_per_customer",
+    "table": "prepaid_kpi",
+    "description": "Average number of recharge transactions per active prepaid customer over the period",
+    "segment": "prepaid",
+    "unit": "count",
+    "synonyms": ["recharges per user", "nombre moyen de recharges", "متوسط الشحنات", "recharge frequency"]
+  },
+  {
+    "id": 44,
+    "column": "multi_sim_ratio",
+    "table": "prepaid_kpi",
+    "description": "Share of customers holding multiple active SIM cards",
+    "segment": "prepaid",
+    "unit": "%",
+    "synonyms": ["multi-SIM", "ratio multi-SIM", "multi SIM share", "نسبة تعدد الشرائح"]
+  },
+  {
+    "id": 45,
+    "column": "avg_tenure",
+    "table": "prepaid_kpi",
+    "description": "Average tenure of prepaid customers in months before churn",
+    "segment": "prepaid",
+    "unit": "months",
+    "synonyms": ["tenure", "ancienneté moyenne prépayé", "average customer age", "durée d'ancienneté"]
+  },
+  {
+    "id": 46,
+    "column": "avg_data_usage_gb",
+    "table": "postpaid_kpi",
+    "description": "Average data consumption per postpaid user",
+    "segment": "postpaid",
+    "unit": "GB",
+    "synonyms": ["data usage postpaid", "usage data postpayé", "consommation data postpayé"]
+  },
+  {
+    "id": 47,
+    "column": "avg_voice_usage_min",
+    "table": "postpaid_kpi",
+    "description": "Average voice minutes per postpaid user",
+    "segment": "postpaid",
+    "unit": "minutes",
+    "synonyms": ["voice usage postpaid", "usage voix postpayé", "minutes voix postpayé"]
+  },
+  {
+    "id": 48,
+    "column": "contribution_postpaid_pct",
+    "table": "fpa_profitability",
+    "description": "Contribution of postpaid segment to total revenue, percentage",
+    "segment": "postpaid",
+    "unit": "%",
+    "synonyms": ["postpaid contribution", "contribution postpayé", "share of postpaid revenue"]
+  },
+  {
+    "id": 49,
+    "column": "contribution_margin_prepaid",
+    "table": "fpa_profitability",
+    "description": "Contribution margin of the prepaid segment (revenue minus variable costs)",
+    "segment": "prepaid",
+    "unit": "%",
+    "synonyms": ["prepaid contribution margin", "marge contribution prépayé"]
+  },
+  {
+    "id": 50,
+    "column": "contribution_margin_postpaid",
+    "table": "fpa_profitability",
+    "description": "Contribution margin of the postpaid segment",
+    "segment": "postpaid",
+    "unit": "%",
+    "synonyms": ["postpaid contribution margin", "marge contribution postpayé"]
+  },
+  {
+    "id": 51,
+    "column": "contribution_margin_b2b",
+    "table": "fpa_profitability",
+    "description": "Contribution margin of the B2B segment",
+    "segment": "b2b",
+    "unit": "%",
+    "synonyms": ["b2b contribution margin", "marge contribution B2B"]
+  },
+  {
+    "id": 52,
+    "column": "opex_network",
+    "table": "opex_capex",
+    "description": "OPEX allocated to network operations and maintenance",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["network OPEX", "OPEX réseau", "network operating costs", "تكاليف الشبكة"]
+  },
+  {
+    "id": 53,
+    "column": "opex_marketing",
+    "table": "opex_capex",
+    "description": "OPEX allocated to marketing, branding, and advertising",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["marketing OPEX", "OPEX marketing", "marketing spend", "advertising costs"]
+  },
+  {
+    "id": 54,
+    "column": "opex_distribution",
+    "table": "opex_capex",
+    "description": "OPEX allocated to distribution, retail, and channel partners",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["distribution OPEX", "OPEX distribution", "channel costs"]
+  },
+  {
+    "id": 55,
+    "column": "opex_support",
+    "table": "opex_capex",
+    "description": "OPEX allocated to customer support and call center operations",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["support OPEX", "OPEX support", "customer service costs"]
+  },
+  {
+    "id": 56,
+    "column": "opex_it",
+    "table": "opex_capex",
+    "description": "OPEX allocated to information technology, software, and platforms",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["IT OPEX", "OPEX IT", "IT operating costs", "tech OPEX"]
+  },
+  {
+    "id": 57,
+    "column": "capex_network",
+    "table": "opex_capex",
+    "description": "CAPEX allocated to network infrastructure (towers, fiber, spectrum)",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["network CAPEX", "CAPEX réseau", "network investment", "infrastructure CAPEX"]
+  },
+  {
+    "id": 58,
+    "column": "capex_it",
+    "table": "opex_capex",
+    "description": "CAPEX allocated to IT systems, BSS, OSS, and data platforms",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["IT CAPEX", "CAPEX IT", "IT investment", "tech CAPEX"]
+  },
+  {
+    "id": 59,
+    "column": "capex_innovation",
+    "table": "opex_capex",
+    "description": "CAPEX allocated to innovation programs, R&D, and new-product development",
+    "segment": "all",
+    "unit": "DZD",
+    "synonyms": ["innovation CAPEX", "CAPEX innovation", "R&D investment", "innovation spend"]
+  }
+]

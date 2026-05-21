@@ -1,0 +1,86 @@
+{
+  "_comment": "Prototype phrases for the latent planner. Each query is classified by cosine similarity to these in BGE-M3 embedding space. Add a phrasing here to teach the planner a new way of asking — no retraining needed in prototype mode. These same phrases seed train_planner.py for the MLP head.",
+  "intents": {
+    "greeting": [
+      "hello", "hi there", "hey", "good morning", "good evening",
+      "thanks a lot", "thank you", "thanks for the help", "bye",
+      "goodbye", "salam", "bonjour", "how are you", "nice, thanks",
+      "ok thank you", "great work"
+    ],
+    "data": [
+      "what was the total revenue in Oran",
+      "compare churn rate between Algiers and Constantine",
+      "show the weekly arpu trend for prepaid subscribers",
+      "average revenue per user last month",
+      "how many active subscribers in Setif",
+      "what is the prepaid churn rate by wilaya",
+      "total opex for the last quarter",
+      "ebitda margin this year",
+      "which wilaya has the highest revenue",
+      "number of gross adds for postpaid",
+      "data usage per user in Annaba",
+      "give me the recharge rate trend",
+      "market share of prepaid customers",
+      "net adds last week",
+      "capex network spending",
+      "revenue breakdown by segment",
+      "top 5 wilayas by subscriber count"
+    ],
+    "definition": [
+      "what does ARPU mean",
+      "define churn rate",
+      "explain what EBITDA is",
+      "what is the meaning of active base",
+      "what does net adds stand for",
+      "can you explain OPEX",
+      "what is gross margin",
+      "tell me what DSO means",
+      "define capex",
+      "what does multi-sim ratio mean",
+      "explain the term migration rate",
+      "what is free cash flow"
+    ],
+    "meta": [
+      "what can you do",
+      "who are you",
+      "what kind of questions can I ask",
+      "how do you work",
+      "what is this assistant",
+      "tell me about yourself",
+      "what are your capabilities",
+      "help me get started",
+      "what can this system do"
+    ],
+    "unanswerable": [
+      "what is the fpa quantum score",
+      "show me the blockchain adoption metric",
+      "what is the customer happiness index",
+      "give me the satellite coverage ratio",
+      "what is the employee turnover rate",
+      "show the stock price today",
+      "what is the weather in Oran"
+    ]
+  },
+  "capabilities": {
+    "viz": [
+      "show me a chart", "plot the trend", "draw a bar graph",
+      "visualize the revenue", "make a graph of it", "give me a chart",
+      "plot it", "show this as a graph", "create a line chart",
+      "can you chart that", "a visual of the data"
+    ],
+    "email": [
+      "email this to the finance director", "send it to Sarah",
+      "mail the report to the team", "notify the CEO",
+      "forward this to operations", "send the results to Bob",
+      "email the figures to management", "send this over to finance",
+      "shoot an email to the manager", "send it to the analyst"
+    ],
+    "template": [
+      "fill the weekly report", "generate a report document",
+      "produce a report", "fill out the report template",
+      "put this in a report", "write up a report", "make a report",
+      "create a document with this", "fill the template",
+      "draft a report document"
+    ]
+  }
+}

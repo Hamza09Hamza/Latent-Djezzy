@@ -1,0 +1,28 @@
+# Telecom Analytics Report
+
+- **Generated:** {{ generated_at }}
+- **Question:** {{ query }}
+{% if entities.wilayas %}- **Wilayas:** {{ entities.wilayas | join(", ") }}
+{% endif %}
+{% if entities.segment %}- **Segment:** {{ entities.segment }}
+{% endif %}
+{% if entities.time_range %}- **Period:** {{ entities.time_range.start }} → {{ entities.time_range.end }}
+{% endif %}
+
+## Summary
+
+{{ answer }}
+
+## Data — {{ row_count }} row(s)
+
+{{ table }}
+
+{% if stats_lines %}
+## Statistics
+
+{% for line in stats_lines %}- {{ line }}
+{% endfor %}
+{% endif %}
+
+---
+*Generated automatically by LatentMind V6 — verify figures before circulation.*

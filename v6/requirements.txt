@@ -1,0 +1,27 @@
+# LatentMind V6 — agentic analytics pipeline
+
+# Core inference
+torch>=2.1.0
+transformers>=4.46.0
+accelerate>=0.27.0
+tokenizers>=0.19.0
+
+# RAG encoder + latent planner (BGE-M3)
+sentence-transformers>=3.0.0
+FlagEmbedding>=1.2.0
+
+# Agent graph + conversation memory
+langgraph>=0.2.0
+
+# Capabilities: report templates + charts
+jinja2>=3.1.0
+matplotlib>=3.7.0
+
+# 4-bit quantization (optional, recommended on a T4)
+bitsandbytes>=0.43.0
+
+# MySQL backend (local only — Colab uses SQLite)
+mysql-connector-python>=8.0.0
+
+# Flash Attention 2 (optional — needs a C++ build, install separately):
+#   pip install flash-attn --no-build-isolation
