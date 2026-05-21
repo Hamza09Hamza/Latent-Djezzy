@@ -84,7 +84,7 @@ def plan_node(state: dict) -> dict:
     return {
         "intent": intent,
         "capabilities": caps,
-        "plan": ["direct_answer"] if is_direct else ["data"],
+        "exec_plan": ["direct_answer"] if is_direct else ["data"],
         "plan_scores": {
             "mode": decision.mode, "score": decision.intent_score,
             "margin": decision.intent_margin, "all": decision.intent_scores,
@@ -141,7 +141,7 @@ def orchestrator_node(state: dict) -> dict:
     return {
         "routing": decision["routing"],
         "capabilities": decision["capabilities"],
-        "plan": decision["plan"],
+        "exec_plan": decision["plan"],
         "confidence": decision["confidence"],
         "trace": _trace(state, *(f"orchestrator: {m}"
                                  for m in decision["trace"])),
@@ -260,7 +260,7 @@ def replan_node(state: dict) -> dict:
 
 # ── 11. visualize (self-skips unless 'viz' in plan) ──────────────────────
 def visualize_node(state: dict) -> dict:
-    if "viz" not in state.get("plan", []):
+    if "viz" not in state.get("exec_plan", []):
         return {}
     if not state.get("exec_ok") or not state.get("rows"):
         return {"trace": _trace(state, "visualize: skipped (no data)")}
@@ -274,7 +274,7 @@ def visualize_node(state: dict) -> dict:
 
 # ── 12. template (self-skips unless 'template' in plan) ──────────────────
 def template_node(state: dict) -> dict:
-    if "template" not in state.get("plan", []):
+    if "template" not in state.get("exec_plan", []):
         return {}
     if not state.get("exec_ok"):
         return {"trace": _trace(state, "template: skipped (no data)")}
@@ -289,7 +289,7 @@ def template_node(state: dict) -> dict:
 
 # ── 13. email (self-skips unless 'email' in plan) — DRAFT ONLY ───────────
 def email_node(state: dict) -> dict:
-    if "email" not in state.get("plan", []):
+    if "email" not in state.get("exec_plan", []):
         return {}
     draft = compose_email_draft(
         state["query"], state.get("answer", ""),
@@ -381,12 +381,12 @@ def finalize_node(state: dict) -> dict:
 # ── conditional-edge routers ─────────────────────────────────────────────
 def route_after_plan(state: dict) -> str:
     return ("direct_answer"
-            if (state.get("plan") or [""])[0] == "direct_answer"
+            if (state.get("exec_plan") or [""])[0] == "direct_answer"
             else "retrieve")
 
 
 def route_after_orchestrator(state: dict) -> str:
-    return ("clarify" if (state.get("plan") or [""])[0] == "clarify"
+    return ("clarify" if (state.get("exec_plan") or [""])[0] == "clarify"
             else "resolve_entities")
 
 

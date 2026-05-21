@@ -33,7 +33,7 @@ class AgentState(TypedDict, total=False):
     routing: dict                # parsed + schema-validated routing object
     intent: str                  # data|definition|greeting|meta|unanswerable
     capabilities: list[str]      # subset of {"viz", "email", "template"}
-    plan: list[str]              # ordered node names chosen by the orchestrator
+    exec_plan: list[str]         # ordered node names chosen by the orchestrator
     confidence: str              # high|medium|low
     plan_scores: dict            # latent-planner intent/capability scores
     feedback: str                # failure note carried into a re-plan
@@ -78,7 +78,7 @@ def initial_state(query: str, thread_id: str = "default") -> dict:
         # retrieval / planning
         "knowledge": "", "grounding": 0.0,
         "router_raw": "", "routing": {}, "intent": "",
-        "capabilities": [], "plan": [], "confidence": "",
+        "capabilities": [], "exec_plan": [], "confidence": "",
         "plan_scores": {}, "feedback": "", "replan_count": 0,
         "entities": {},
         # sql
