@@ -79,9 +79,11 @@ def plan_node(state: dict) -> dict:
         intent = "data"
 
     is_direct = intent in ("greeting", "meta", "definition", "unanswerable")
+    # capabilities only apply to data queries — zero them out for direct answers
+    caps = decision.capabilities if not is_direct else []
     return {
         "intent": intent,
-        "capabilities": decision.capabilities,
+        "capabilities": caps,
         "plan": ["direct_answer"] if is_direct else ["data"],
         "plan_scores": {
             "mode": decision.mode, "score": decision.intent_score,
