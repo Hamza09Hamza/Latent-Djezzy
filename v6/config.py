@@ -56,8 +56,9 @@ class V6Config:
     ]
     SLM_OVERRIDE   = _env("SLM_OVERRIDE")          # force a Hub model id
     SLM_HUB_ID     = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
-    USE_4BIT       = _env("4BIT", "0") == "1"      # 4-bit NF4 quantization
-    USE_FLASH_ATTN = _env("FLASH_ATTN", "0") == "1"
+    USE_4BIT         = _env("4BIT", "0") == "1"      # 4-bit NF4 quantization
+    USE_FLASH_ATTN   = _env("FLASH_ATTN", "0") == "1"
+    USE_SPECULATIVE  = _env("SPECULATIVE", "1") == "1"  # 0.5B drafter → 2-4x speed
 
     ROUTER_MAX_NEW_TOKENS = 128   # routing JSON rarely exceeds 80 tokens
     SQLGEN_MAX_NEW_TOKENS = 160   # SQL rarely exceeds 120 tokens

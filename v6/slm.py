@@ -60,7 +60,7 @@ class DualRoleSLM:
         # The drafter generates γ candidate tokens per step; the main model
         # validates them all in one forward pass — free speed from the KV cache.
         self._draft: AutoModelForCausalLM | None = None
-        draft_id = V6Config.draft_slm_id(model_id)
+        draft_id = V6Config.draft_slm_id(model_id) if V6Config.USE_SPECULATIVE else None
         if draft_id and draft_id != model_id:
             try:
                 draft_kwargs = {"torch_dtype": torch.float16 if self.device.type == "cuda" else torch.float32}
