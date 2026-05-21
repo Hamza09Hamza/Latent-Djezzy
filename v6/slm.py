@@ -17,6 +17,7 @@ Colab knobs (env, see config.py): V6_4BIT, V6_FLASH_ATTN, V6_SLM_OVERRIDE.
 """
 
 from __future__ import annotations
+import threading
 import time
 
 import torch
@@ -131,6 +132,28 @@ class DualRoleSLM:
     def clear_thread(self, thread_id: str) -> None:
         """Drop a thread's stored KV cache to free GPU memory."""
         self._store.pop(thread_id, None)
+
+    # ── streaming generation ─────────────────────────────────────────────
+    def stream_generate(self, messages: list[dict], max_new_tokens: int = 512):
+        """Yield decoded tokens one by one as the model generates them."""
+        from transformers import TextIteratorStreamer
+        text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+        enc = self.tokenizer(text, return_tensors="pt").to(self.device)
+        streamer = TextIteratorStreamer(
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+        gen_kwargs = dict(
+            **enc,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            streamer=streamer,
+            pad_token_id=self.tokenizer.eos_token_id,
+        )
+        t = threading.Thread(target=self.model.generate, kwargs=gen_kwargs)
+        t.start()
+        for token in streamer:
+            yield token
+        t.join()
 
     # ── phase-2 implementations ──────────────────────────────────────────
     def _sqlgen_kv(self, seq1, cache, instruction: str, max_new: int) -> str:

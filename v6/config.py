@@ -43,7 +43,7 @@ class V6Config:
     MYSQL_HOST     = os.environ.get("LATENTMIND_MYSQL_HOST", "localhost")
     MYSQL_PORT     = int(os.environ.get("LATENTMIND_MYSQL_PORT", "3306"))
     MYSQL_USER     = os.environ.get("LATENTMIND_MYSQL_USER", "root")
-    MYSQL_PASSWORD = os.environ.get("LATENTMIND_MYSQL_PASSWORD", "2003Hamza2003!")
+    MYSQL_PASSWORD = os.environ.get("LATENTMIND_MYSQL_PASSWORD", "")
     MYSQL_DB       = os.environ.get("LATENTMIND_MYSQL_DB", "interndb")
 
     # ── SLM — one model, two roles ───────────────────────────────────────
