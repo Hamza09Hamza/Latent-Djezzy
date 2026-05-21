@@ -52,13 +52,25 @@ def _history_text(turns: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_val(v) -> str:
+    if isinstance(v, float):
+        if abs(v) >= 1_000:
+            return f"{v:,.2f}"
+        return f"{v:.4f}"
+    if isinstance(v, int) and abs(v) >= 1_000:
+        return f"{v:,}"
+    return str(v)
+
+
 def _summarize_rows(rows: list[dict], cols: list[str]) -> str:
     n = len(rows)
     if n == 1:
-        return "Result: " + ", ".join(f"{c} = {rows[0].get(c)}" for c in cols)
+        parts = [f"{c}: {_fmt_val(rows[0].get(c))}" for c in cols]
+        return " | ".join(parts)
     head = rows[:8]
     body = "\n".join(
-        "  " + ", ".join(f"{c}={r.get(c)}" for c in cols) for r in head)
+        "  " + " | ".join(f"{c}: {_fmt_val(r.get(c))}" for c in cols)
+        for r in head)
     more = f"\n  ... ({n - 8} more rows)" if n > 8 else ""
     return f"{n} rows returned:\n{body}{more}"
 
