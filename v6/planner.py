@@ -157,17 +157,20 @@ class LatentPlanner:
         feat = torch.cat([qv, pv]).unsqueeze(0)
         intent_logits, cap_logits = self.head(feat)
         iprob = torch.softmax(intent_logits[0], dim=-1)
-        cprob = torch.sigmoid(cap_logits[0])
 
         idx = int(iprob.argmax())
         srt = torch.sort(iprob, descending=True).values
         margin = float(srt[0] - srt[1]) if len(srt) > 1 else float(srt[0])
 
+        # Use prototype cosine for capabilities — more reliable than MLP sigmoid
+        # when the capability training set is small. Intent detection (above)
+        # benefits from the MLP; capability detection uses the transparent
+        # cosine threshold so chart/email/template queries are never missed.
         caps, cap_scores = [], {}
-        for j, cp in enumerate(self.CAPS):
-            s = float(cprob[j])
+        for cp, protos in self.cap_protos.items():
+            s = float((protos @ qv).max()) if len(protos) else 0.0
             cap_scores[cp] = round(s, 3)
-            if s >= 0.5:
+            if s >= V6Config.CAP_THRESHOLD:
                 caps.append(cp)
 
         return PlanDecision(
