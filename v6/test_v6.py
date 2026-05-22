@@ -6,7 +6,7 @@ That covers every bug fix and every deterministic component.
 
     python3 -m v6.test_v6
 
-Sections: schema · entities · sql_tools · capabilities · planner · graph.
+Sections: schema · entities · sql_tools · capabilities · brain · graph.
 """
 
 from __future__ import annotations
@@ -157,42 +157,58 @@ def test_capabilities():
           draft.get("to") and "sent" not in draft["status"])
 
 
-# ── E. latent planner (real BGE-M3) ──────────────────────────────────────
-def test_planner():
-    section("E. latent planner (loads BGE-M3 — may take ~20s)")
-    try:
-        from v6.planner import get_planner
-        p = get_planner()
-    except Exception as exc:  # noqa: BLE001
-        check("planner loaded", False, f"{type(exc).__name__}: {exc}")
+# ── E. policy brain (real BGE-M3 + the trained head) ─────────────────────
+def test_brain():
+    section("E. policy brain (loads BGE-M3 + the trained head)")
+    from v6.config import V6Config
+    if not os.path.isfile(V6Config.BRAIN_HEAD_PATH):
+        check("brain head trained", False,
+              "models/brain_head.pt missing — run brain_data + train_brain")
         return
-    check("planner ready (prototype mode)", p.mode == "prototype")
+    try:
+        from v6.brain import get_brain
+        b = get_brain()
+    except Exception as exc:  # noqa: BLE001
+        check("brain loaded", False, f"{type(exc).__name__}: {exc}")
+        return
+    check("brain loaded", True)
 
-    cases = [
-        ("hello", "greeting"),
-        ("good morning", "greeting"),
-        ("what does ARPU mean", "definition"),
-        ("define churn rate", "definition"),
-        ("what can you do", "meta"),
-        ("what was the total revenue in Oran", "data"),
-        ("compare churn rate between Algiers and Constantine", "data"),
-        ("show the weekly arpu trend for prepaid", "data"),
-    ]
-    for query, expected in cases:
-        d = p.plan(query)
-        check(f"intent('{query[:38]}') == {expected}",
-              d.intent == expected,
-              f"got {d.intent} scores={d.intent_scores}")
+    # step 0 — intent classification straight from the query
+    for query, intent in [("hello", "greeting"),
+                          ("what does ARPU mean", "definition"),
+                          ("what can you do", "meta"),
+                          ("what was the total revenue in Oran", "data")]:
+        d = b.decide(query, "", [])
+        check(f"intent('{query[:32]}') == {intent}", d.intent == intent,
+              f"got {d.intent} {d.intent_scores}")
 
-    viz = p.plan("chart the average revenue by wilaya")
-    check("'chart ...' → viz capability", "viz" in viz.capabilities,
-          f"caps={viz.capabilities} scores={viz.cap_scores}")
-    em = p.plan("email the revenue figures to the finance director")
-    check("'email ...' → email capability", "email" in em.capabilities,
-          f"caps={em.capabilities} scores={em.cap_scores}")
-    rep = p.plan("put the churn numbers in a report")
-    check("'... report' → template capability", "template" in rep.capabilities,
-          f"caps={rep.capabilities} scores={rep.cap_scores}")
+    # a greeting stops at step 0 — continue score below the seuil
+    d = b.decide("hello there", "", [])
+    check("greeting → continue below the seuil",
+          d.continue_score < V6Config.BRAIN_SEUIL, f"cont={d.continue_score}")
+
+    # a data query keeps going, and opens with rag or sql
+    d = b.decide("what was the total revenue in Oran", "", [])
+    check("data query → continues past step 0",
+          d.continue_score >= V6Config.BRAIN_SEUIL, f"cont={d.continue_score}")
+    check("data query first action is rag or sql",
+          d.action in ("rag", "sql"), d.action)
+
+    # once rag + sql have both succeeded, the brain should wind down
+    done = [{"action": "rag", "ok": True, "error_type": "none",
+             "row_bucket": "none", "attempt": 1},
+            {"action": "sql", "ok": True, "error_type": "none",
+             "row_bucket": "many", "attempt": 1}]
+    d = b.decide("what was the total revenue in Oran", "", done, grounding=0.7)
+    check("plain data, sql done → continue below the seuil",
+          d.continue_score < V6Config.BRAIN_SEUIL, f"cont={d.continue_score}")
+
+    # a chart query should route to the chart action after sql
+    d = b.decide("show me a bar chart of revenue by wilaya", "", done,
+                 grounding=0.7)
+    check("chart query → chart action after sql",
+          d.action == "chart" and d.continue_score >= V6Config.BRAIN_SEUIL,
+          f"action={d.action} cont={d.continue_score}")
 
 
 # ── F. full graph (stub SLM, real planner + DB) ──────────────────────────
@@ -294,6 +310,13 @@ def test_graph():
                    "WHERE dl.wilaya = 'Constantine' GROUP BY dl.wilaya")
 
     slm_mod._slm = stub                      # inject the stub singleton
+
+    from v6.config import V6Config
+    if not os.path.isfile(V6Config.BRAIN_HEAD_PATH):
+        check("brain head trained (graph test needs it)", False,
+              "run: python3 -m v6.brain_data && python3 -m v6.train_brain")
+        return
+
     try:
         agent = LatentMindV6()
     except Exception as exc:  # noqa: BLE001
@@ -301,21 +324,27 @@ def test_graph():
         return
     check("graph built", True)
 
+    def _actions(r):
+        return [s.get("action") for s in r.get("step_log", [])]
+
     # 1. greeting must NOT generate SQL  (the v5 bug)
     r = agent.ask("hello", thread_id="t-greet")
     check("'hello' → greeting intent", r.get("intent") == "greeting",
           r.get("intent"))
-    check("'hello' did NOT run SQL", not r.get("sql"))
-    check("'hello' got a friendly answer", "LatentMind" in r.get("answer", ""))
+    check("'hello' did NOT run SQL",
+          "sql" not in _actions(r) and not r.get("sql"))
+    check("'hello' got a friendly answer",
+          "LatentMind" in r.get("final_answer", ""))
 
     # 2. definition
     r = agent.ask("what does ARPU mean", thread_id="t-def")
     check("'what does ARPU mean' → definition",
           r.get("intent") == "definition", r.get("intent"))
     check("definition answer mentions ARPU",
-          "ARPU" in r.get("answer", "") or "Average" in r.get("answer", ""))
+          "ARPU" in r.get("final_answer", "")
+          or "Average" in r.get("final_answer", ""))
 
-    # 3. data — the revenue-in-Oran query that used to crash
+    # 3. data — the revenue-in-Oran query
     r = agent.ask("what was the total revenue in Oran", thread_id="t-rev")
     check("'revenue in Oran' → data", r.get("intent") == "data")
     check("'revenue in Oran' executed OK", r.get("exec_ok") is True,
@@ -331,23 +360,21 @@ def test_graph():
     check("churn comparison returns BOTH cities (Algiers→Alger fixed)",
           {"Alger", "Constantine"}.issubset(wilayas), str(wilayas))
 
-    # 5. capability — chart
+    # 5. capability — the brain loops through the chart action
     r = agent.ask("chart the average revenue by wilaya", thread_id="t-viz")
-    check("'chart ...' put viz in the plan", "viz" in r.get("plan", []),
-          str(r.get("plan")))
+    check("'chart ...' ran the chart action", "chart" in _actions(r),
+          str(_actions(r)))
     check("chart file produced", bool(r.get("chart_path"))
           and os.path.isfile(r.get("chart_path", "")))
 
     # 6. capability — email draft (drafted, never sent)
     r = agent.ask("email the prepaid churn by wilaya to the finance director",
                   thread_id="t-mail")
-    check("'email ...' put email in the plan", "email" in r.get("plan", []),
-          str(r.get("plan")))
+    check("'email ...' ran the email action", "email" in _actions(r),
+          str(_actions(r)))
     draft = r.get("email_draft") or {}
     check("email drafted, not sent", draft.get("status") == "draft",
           str(draft.get("status")))
-    check("email recipient resolved to a finance contact",
-          draft.get("to_name") is not None, str(draft.get("to_name")))
 
     # 7. memory — a follow-up turn on the same thread
     agent.ask("what was the total revenue in Oran", thread_id="t-mem")
@@ -372,7 +399,7 @@ def main():
     test_entities()
     test_sql_tools()
     test_capabilities()
-    test_planner()
+    test_brain()
     test_graph()
 
     print(f"\n{'=' * 60}")

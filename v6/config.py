@@ -70,16 +70,19 @@ class V6Config:
     RAG_TOP_K        = 5
     RAG_LOW_CONF     = 0.45        # top cosine below this → weak grounding
 
-    # ── Latent planner — decides intent + capabilities ───────────────────
-    # The planner classifies the query in BGE-M3 embedding space, not with
-    # regex. Mode "prototype" needs no training (nearest-prototype). Mode
-    # "mlp" loads a trained head — see planner_data.py and train_planner.py.
-    PLANNER_MODE       = _env("PLANNER", "prototype")     # prototype | mlp
-    PLANNER_HEAD_PATH  = os.path.join(MODELS_DIR, "planner_head.pt")
-    PLANNER_PROTOTYPES = os.path.join(DATA_DIR, "planner_prototypes.json")
-    CAP_THRESHOLD      = 0.30      # capability cosine above this → active
-    PLANNER_LOW_CONF   = 0.40      # intent score below this → weak plan
-    MAX_REPLAN         = 1         # times the graph may loop back to re-plan
+    # ── Brain — the policy loop that decides the next action ─────────────
+    # A trained 3-head MLP, called once per loop step. It reads the query,
+    # the conversation memory and the outcome of the last action, then
+    # predicts the intent, the next action, and a "continue" score — the
+    # seuil. Below the seuil the loop ends at the communicator. Build it:
+    #   python3 -m v6.brain_data    # synthesize agentic traces
+    #   python3 -m v6.train_brain   # train models/brain_head.pt
+    BRAIN_HEAD_PATH    = os.path.join(MODELS_DIR, "brain_head.pt")
+    BRAIN_TRAIN_PATH   = os.path.join(DATA_DIR, "brain_train.jsonl")
+    BRAIN_PROTOTYPES   = os.path.join(DATA_DIR, "planner_prototypes.json")
+    BRAIN_SEUIL        = float(_env("BRAIN_SEUIL", "0.5"))      # continue ≥ this → keep going
+    BRAIN_CONF_MIN     = float(_env("BRAIN_CONF_MIN", "0.35"))  # action conf below → communicator
+    BRAIN_MAX_STEPS    = int(_env("BRAIN_MAX_STEPS", "8"))      # loop safety cap
 
     # ── SQL runner safety ────────────────────────────────────────────────
     SQL_MAX_ROWS    = 1000         # LIMIT injected when the model omits one

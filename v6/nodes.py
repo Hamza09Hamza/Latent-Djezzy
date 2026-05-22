@@ -1,33 +1,41 @@
-"""v6/nodes.py — The LangGraph node functions.
+"""v6/nodes.py — The LangGraph node functions for the policy loop.
 
-Every node takes the shared AgentState and returns a partial update.
+The graph is a star: every action returns to the brain, which re-decides.
 
-Flow of decisions:
-  plan_node          — the latent planner decides intent + capabilities.
-  router_node        — the SLM maps a data query onto schema tables/columns.
-  orchestrator_node  — deterministic: validates that mapping, assembles the
-                       plan, or routes to `clarify`.
-  the capability nodes (visualize / template / email) self-skip unless their
-  tag is in `plan` — the plan, set once, is the only thing that decides what
-  runs. On a failed execution `route_after_answer` loops back through
-  `replan` so the system gets a second, feedback-informed attempt.
+  brain        — one tick of the policy MLP: intent + next action + the
+                 continue score (the seuil). route_after_brain reads it.
+  rag          — retrieve KPI knowledge, record the grounding score.
+  sql          — the full router → validate → generate → execute chain
+                 (run_sql_pipeline), reusing every v6 SQL function as-is.
+  chart/email/template — the output capabilities, one per action.
+  communicator — terminal: compose the final answer from whatever the
+                 loop produced, and roll the conversation memory.
+
+Every action node appends one outcome dict to `step_log`; that history is
+exactly what the brain reads back through encode_outcome on the next tick.
+Nodes also append short `thoughts` — the feed the notebook streams as the
+"thinking" UX.
 """
 
 from __future__ import annotations
 import time
 
+from .brain import get_brain, row_bucket
 from .capabilities import compose_email_draft, fill_report, make_chart
 from .config import V6Config
 from .entities import get_resolver
 from .knowledge import get_retriever
 from .orchestrator import assemble
-from .planner import get_planner
 from .prompts import (build_router_messages, build_sqlgen_instruction,
                       parse_router_output)
 from .schema import get_db_schema
 from .slm import get_slm
 from .sql_tools import (clean_sql, consistency_check, correction_hint,
                         enforce_limit, execute_sql, validate_sql)
+
+_MAX_COMPACT_CHARS = 600
+_MAX_RAW_TURNS = 2
+_ACTIONS = ("rag", "sql", "chart", "email", "template")
 
 
 # ── small helpers ────────────────────────────────────────────────────────
@@ -41,8 +49,20 @@ def _timing(state: dict, key: str, ms: float) -> dict:
     return t
 
 
-_MAX_COMPACT_CHARS = 600
-_MAX_RAW_TURNS = 2
+def _thoughts(state: dict, *items: dict) -> list[dict]:
+    """Append to the streamed thinking feed."""
+    return list(state.get("thoughts", [])) + list(items)
+
+
+def _step(state: dict, entry: dict) -> list[dict]:
+    """Append one executed-action outcome to the brain's step log."""
+    return list(state.get("step_log", [])) + [entry]
+
+
+def _attempt(state: dict, action: str) -> int:
+    """1 for the first run of `action` this turn, 2 for the next, ..."""
+    return 1 + sum(1 for s in state.get("step_log", [])
+                   if s.get("action") == action)
 
 
 def _compact_turns(turns: list[dict]) -> str:
@@ -63,7 +83,7 @@ def _compact_turns(turns: list[dict]) -> str:
 
 def _history_text(turns: list[dict], memory_summary: str = "",
                   limit: int = _MAX_RAW_TURNS) -> str:
-    """Recent raw turns + compacted older memory for the router prompt."""
+    """Recent raw turns + compacted older memory, for prompts and the brain."""
     if not turns and not memory_summary:
         return ""
     lines: list[str] = []
@@ -89,8 +109,7 @@ def _fmt_val(v) -> str:
 def _summarize_rows(rows: list[dict], cols: list[str]) -> str:
     n = len(rows)
     if n == 1:
-        parts = [f"{c}: {_fmt_val(rows[0].get(c))}" for c in cols]
-        return " | ".join(parts)
+        return " | ".join(f"{c}: {_fmt_val(rows[0].get(c))}" for c in cols)
     head = rows[:8]
     body = "\n".join(
         "  " + " | ".join(f"{c}: {_fmt_val(r.get(c))}" for c in cols)
@@ -99,285 +118,330 @@ def _summarize_rows(rows: list[dict], cols: list[str]) -> str:
     return f"{n} rows returned:\n{body}{more}"
 
 
-# ── 1. plan (the latent planner — decides intent + capabilities) ─────────
-def plan_node(state: dict) -> dict:
+# ── the brain ────────────────────────────────────────────────────────────
+_ACTION_THOUGHT = {
+    "rag": "Let me check the reference knowledge first.",
+    "sql": "I'll query the database for the numbers.",
+    "chart": "The data's in — let me turn it into a chart.",
+    "email": "Let me draft an email with these results.",
+    "template": "Let me put this into a report.",
+}
+
+
+def _brain_thought(action: str, will_stop: bool, step_log: list[dict]) -> str:
+    if will_stop:
+        return ("Let me answer that directly." if not step_log
+                else "I have what I need — writing the answer now.")
+    if action == "sql" and any(s.get("action") == "sql" for s in step_log):
+        return "That query didn't land — let me try it a different way."
+    return _ACTION_THOUGHT.get(action, "Working on the next step.")
+
+
+def brain_node(state: dict) -> dict:
+    """One tick of the policy MLP — pick the next action, judge the seuil."""
     t0 = time.time()
-    turns = state.get("turns", [])
-    decision = get_planner().plan(
-        state["query"],
-        _history_text(turns, state.get("memory_summary", "")))
-    intent = decision.intent
+    step = state.get("brain_step", 0)
+    memory = _history_text(state.get("turns", []),
+                           state.get("memory_summary", ""))
+    decision = get_brain().decide(
+        state["query"], memory, state.get("step_log", []),
+        grounding=state.get("grounding", 0.0),
+        thread_id=state.get("thread_id", "default"))
 
-    # a terse follow-up ("and for Oran?") continues the prior turn's thread —
-    # a memory-continuation rule, not query classification
-    note = ""
-    if (decision.followup and turns
-            and turns[-1].get("intent") == "data"
-            and intent not in ("data", "greeting", "meta", "unanswerable", "definition")):
-        note = f" [follow-up → data, was {intent}]"
-        intent = "data"
+    # intent is decided once, on the first tick, then held for the turn
+    intent = state.get("intent") or decision.intent
 
-    is_direct = intent in ("greeting", "meta", "definition", "unanswerable")
-    # capabilities only apply to data queries — zero them out for direct answers
-    caps = decision.capabilities if not is_direct else []
+    will_stop = (step + 1 >= V6Config.BRAIN_MAX_STEPS
+                 or decision.continue_score < V6Config.BRAIN_SEUIL
+                 or decision.action_conf < V6Config.BRAIN_CONF_MIN)
+    thought = _brain_thought(decision.action, will_stop,
+                             state.get("step_log", []))
+
     return {
+        "brain_step": step + 1,
         "intent": intent,
-        "capabilities": caps,
-        "exec_plan": ["direct_answer"] if is_direct else ["data"],
-        "plan_scores": {
-            "mode": decision.mode, "score": decision.intent_score,
-            "margin": decision.intent_margin, "all": decision.intent_scores,
-            "caps": decision.cap_scores, "followup": decision.followup,
+        "next_action": decision.action,
+        "continue_score": decision.continue_score,
+        "brain_scores": {
+            "intent": decision.intent_scores,
+            "action": decision.action_scores,
+            "action_conf": decision.action_conf,
+            "continue": decision.continue_score,
         },
-        "trace": _trace(state, f"plan: intent={intent} "
-                               f"({decision.intent_score}) "
-                               f"caps={decision.capabilities} "
-                               f"mode={decision.mode}"
-                               + (" [followup]" if decision.followup else "")
-                               + note),
-        "timings": _timing(state, "plan_ms", (time.time() - t0) * 1000),
+        "thoughts": _thoughts(state, {"kind": "thinking", "text": thought}),
+        "trace": _trace(state, f"brain#{step}: intent={intent} "
+                               f"next={decision.action} "
+                               f"cont={decision.continue_score} "
+                               f"conf={decision.action_conf} "
+                               f"{'STOP' if will_stop else 'GO'}"),
+        "timings": _timing(state, f"brain{step}_ms", (time.time() - t0) * 1000),
     }
 
 
-# ── 2. retrieve (RAG — data path only) ───────────────────────────────────
-def retrieve_node(state: dict) -> dict:
+def route_after_brain(state: dict) -> str:
+    """The seuil: keep looping, or hand off to the communicator."""
+    if state.get("brain_step", 0) >= V6Config.BRAIN_MAX_STEPS:
+        return "communicator"
+    if state.get("continue_score", 0.0) < V6Config.BRAIN_SEUIL:
+        return "communicator"
+    conf = (state.get("brain_scores", {}) or {}).get("action_conf", 1.0)
+    if conf < V6Config.BRAIN_CONF_MIN:
+        return "communicator"
+    action = state.get("next_action", "")
+    return action if action in _ACTIONS else "communicator"
+
+
+# ── rag ──────────────────────────────────────────────────────────────────
+def rag_node(state: dict) -> dict:
     t0 = time.time()
     knowledge, grounding = get_retriever().knowledge_block(state["query"])
+    weak = grounding < V6Config.RAG_LOW_CONF
+    entry = {"action": "rag", "ok": True,
+             "error_type": "rag_weak" if weak else "none",
+             "row_bucket": "none", "attempt": _attempt(state, "rag")}
     return {
         "knowledge": knowledge,
         "grounding": grounding,
-        "trace": _trace(state, f"retrieve: grounding={grounding:.3f}"),
-        "timings": _timing(state, "retrieve_ms", (time.time() - t0) * 1000),
+        "step_log": _step(state, entry),
+        "thoughts": _thoughts(state, {"kind": "thinking",
+            "text": f"Pulled reference knowledge (grounding {grounding:.2f})."}),
+        "trace": _trace(state, f"rag: grounding={grounding:.3f}"),
+        "timings": _timing(state, "rag_ms", (time.time() - t0) * 1000),
     }
 
 
-# ── 3. router (SLM phase 1 — schema mapping) ─────────────────────────────
-def router_node(state: dict) -> dict:
+# ── sql (the full router → generate → execute chain) ─────────────────────
+def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
+    """The body of the `sql` action. Reuses every v6 SQL function unchanged;
+    only the wiring lives here. The generate⇄validate retry is the micro-
+    retry; the brain owns the macro-retry by re-picking the `sql` action.
+    Returns (state-updates, thoughts)."""
     schema = get_db_schema()
-    history = _history_text(state.get("turns", []), state.get("memory_summary", ""))
+    thoughts: list[dict] = []
+    query = state["query"]
+    thread = state.get("thread_id", "default")
+
+    # phase 1 — router (SLM), then deterministic schema validation
+    history = _history_text(state.get("turns", []),
+                            state.get("memory_summary", ""))
     messages = build_router_messages(
-        state["query"], schema.prompt(), state.get("knowledge", ""),
+        query, schema.prompt(), state.get("knowledge", ""),
         history, feedback=state.get("feedback", ""))
-    res = get_slm().run_router(messages, thread_id=state["thread_id"])
-    routing = parse_router_output(res["router_output"])
-    return {
-        "router_raw": res["router_output"],
-        "routing": routing,
-        "trace": _trace(state, f"router: tables={routing.get('tables')} "
-                               f"parse_ok={routing.get('_parse_ok')}"),
-        "timings": _timing(state, "router_ms", res["router_ms"]),
-    }
+    rr = get_slm().run_router(messages, thread_id=thread)
+    routing = parse_router_output(rr["router_output"])
+    decision = assemble(query, routing, [], False,
+                        state.get("grounding", 0.0),
+                        state.get("turns", []), schema)
+    routing = decision["routing"]
+    thoughts.append({"kind": "thinking",
+                     "text": f"Mapped it to tables: "
+                             f"{routing.get('tables') or '—'}."})
 
+    # low confidence — no resolvable metric table → ask the user to refine
+    if decision["confidence"] == "low":
+        return ({
+            "router_raw": rr["router_output"], "routing": routing,
+            "entities": {}, "sql": "", "sql_valid": False, "sql_issues": [],
+            "exec_ok": False, "rows": [], "columns": [], "feedback": "",
+            "final_answer": ("I'm not sure which KPI you mean. Could you name "
+                             "one — revenue, ARPU, churn, subscribers, EBITDA, "
+                             "OPEX/CAPEX — and optionally a wilaya and period?"),
+        }, thoughts)
 
-# ── 4. orchestrator (deterministic validation + plan assembly) ───────────
-def orchestrator_node(state: dict) -> dict:
-    schema = get_db_schema()
-    scores = state.get("plan_scores", {})
-    decision = assemble(
-        state["query"], state.get("routing", {}),
-        state.get("capabilities", []), scores.get("followup", False),
-        state.get("grounding", 0.0), state.get("turns", []), schema)
-    return {
-        "routing": decision["routing"],
-        "capabilities": decision["capabilities"],
-        "exec_plan": decision["plan"],
-        "confidence": decision["confidence"],
-        "trace": _trace(state, *(f"orchestrator: {m}"
-                                 for m in decision["trace"])),
-    }
-
-
-# ── 5. resolve entities (deterministic) ──────────────────────────────────
-def resolve_entities_node(state: dict) -> dict:
-    schema = get_db_schema()
+    # resolve entities (deterministic)
     max_date = schema.date_range[1] if schema.date_range else None
     entities = get_resolver().resolve_all(
-        state["query"], state.get("routing", {}).get("filters", {}), max_date)
-    msg = f"resolve: wilayas={entities['wilayas']}"
-    if entities.get("segment"):
-        msg += f" segment={entities['segment']}"
-    if entities.get("time_range"):
-        msg += " time=" + entities["time_range"]["start"]
-    if entities.get("unresolved_wilayas"):
-        msg += f" UNRESOLVED={entities['unresolved_wilayas']}"
-    return {"entities": entities, "trace": _trace(state, msg)}
+        query, routing.get("filters", {}), max_date)
 
+    # phase 2 — generate ⇄ validate (bounded micro-retry)
+    sql, sql_valid, sql_issues = "", False, []
+    for attempt in range(1, V6Config.SQL_MAX_RETRIES + 2):
+        instr = build_sqlgen_instruction(query, routing, entities, schema)
+        if attempt > 1 and sql_issues:
+            hint = correction_hint(sql_issues, entities)
+            if hint:
+                instr += ("\n\nCORRECTION — your previous attempt was wrong. "
+                          + hint)
+        res = get_slm().run_sqlgen(thread, instr)
+        v = validate_sql(clean_sql(res.get("sql_output", "")), schema)
+        sql, sql_valid = v["sql"], v["valid"]
+        sql_issues = list(v["errors"]) + consistency_check(sql, entities, query)
+        if sql_valid and not sql_issues:
+            break
+    thoughts.append({"kind": "thinking",
+                     "text": (f"Built the query: {sql[:80]}" if sql
+                              else "I couldn't form a valid query.")})
 
-# ── 6. SQL generate (SLM phase 2, reuses the router KV cache) ────────────
-def sql_generate_node(state: dict) -> dict:
-    schema = get_db_schema()
-    attempts = state.get("sql_attempts", 0)
-    instr = build_sqlgen_instruction(
-        state["query"], state.get("routing", {}),
-        state.get("entities", {}), schema)
-    if attempts >= 1 and state.get("sql_issues"):
-        hint = correction_hint(state["sql_issues"], state.get("entities", {}))
-        if hint:
-            instr += "\n\nCORRECTION — your previous attempt was wrong. " + hint
-    res = get_slm().run_sqlgen(state["thread_id"], instr)
-    sql = clean_sql(res.get("sql_output", ""))
-    return {
-        "sql": sql,
-        "sql_attempts": attempts + 1,
-        "trace": _trace(state, f"sql_generate (attempt {attempts + 1}, "
-                               f"kv_reused={res.get('kv_reused')}): "
-                               f"{sql[:90]}"),
-        "timings": _timing(state, "sqlgen_ms", res.get("sqlgen_ms", 0.0)),
-    }
+    # execute
+    rows, columns, exec_ok, err = [], [], False, None
+    if sql_valid and sql:
+        final_sql = enforce_limit(sql)
+        ex = execute_sql(final_sql)
+        rows, columns, exec_ok, err = (ex["rows"], ex["columns"],
+                                       ex["ok"], ex["error"])
+        sql = final_sql
+    thoughts.append({"kind": "thinking",
+                     "text": (f"Ran it — {len(rows)} row(s) back." if exec_ok
+                              else "The query did not run cleanly.")})
 
-
-# ── 7. SQL validate (static safety + intent consistency) ─────────────────
-def sql_validate_node(state: dict) -> dict:
-    schema = get_db_schema()
-    v = validate_sql(state.get("sql", ""), schema)
-    issues = consistency_check(
-        v["sql"], state.get("entities", {}), state["query"])
-    all_issues = list(v["errors"]) + list(issues)
-    return {
-        "sql": v["sql"],
-        "sql_valid": v["valid"],
-        "sql_issues": all_issues,
-        "trace": _trace(state, f"sql_validate: valid={v['valid']} "
-                               f"issues={all_issues or 'none'}"),
-    }
-
-
-# ── 8. SQL execute ───────────────────────────────────────────────────────
-def sql_execute_node(state: dict) -> dict:
-    t0 = time.time()
-    sql = enforce_limit(state.get("sql", ""))
-    res = execute_sql(sql)
-    errors = list(state.get("errors", []))
-    if res["error"]:
-        errors.append(res["error"])
-    return {
-        "sql": sql,
-        "rows": res["rows"],
-        "columns": res["columns"],
-        "exec_ok": res["ok"],
-        "errors": errors,
-        "trace": _trace(state, f"sql_execute: ok={res['ok']} "
-                               f"rows={len(res['rows'])}"),
-        "timings": _timing(state, "exec_ms", (time.time() - t0) * 1000),
-    }
-
-
-# ── 9. answer (compose the base data answer) ─────────────────────────────
-def answer_node(state: dict) -> dict:
-    rows, cols = state.get("rows", []), state.get("columns", [])
-    if not state.get("sql"):
-        ans = ("I couldn't build a valid SQL query for that question. "
-               "Could you rephrase it with a clearer KPI?")
-    elif not state.get("exec_ok"):
-        err = (state.get("errors") or ["unknown error"])[-1]
-        ans = (f"I built a query but it failed to run ({err}). "
-               f"SQL: {state.get('sql', '')}")
+    # compose the data answer
+    if not sql:
+        answer = ("I couldn't build a valid SQL query for that. "
+                  "Could you rephrase it with a clearer KPI?")
+    elif not exec_ok:
+        answer = f"I built a query but it failed to run ({err}). SQL: {sql}"
     elif not rows:
-        ans = "The query ran successfully but returned no matching rows."
+        answer = "The query ran but returned no matching rows."
     else:
-        ans = _summarize_rows(rows, cols)
-        caveats = [i for i in state.get("sql_issues", [])
-                   if "wilaya" in i or "week_start" in i]
+        answer = _summarize_rows(rows, columns)
+        caveats = [i for i in sql_issues if "wilaya" in i or "week_start" in i]
         if caveats:
-            ans += ("\n(Note: the query may not perfectly match your "
-                    "request — " + caveats[0] + ".)")
-    return {"final_answer": ans, "trace": _trace(state, "answer: composed")}
+            answer += ("\n(Note: the query may not perfectly match your "
+                       "request — " + caveats[0] + ".)")
+
+    errors = list(state.get("errors", []))
+    if err:
+        errors.append(err)
+
+    return ({
+        "router_raw": rr["router_output"], "routing": routing,
+        "entities": entities, "sql": sql, "sql_valid": sql_valid,
+        "sql_issues": sql_issues, "rows": rows, "columns": columns,
+        "exec_ok": exec_ok, "errors": errors, "final_answer": answer,
+        "feedback": (f"the generated SQL failed ({err})" if err else ""),
+    }, thoughts)
 
 
-# ── 10. replan (loop back after a failed execution) ──────────────────────
-def replan_node(state: dict) -> dict:
-    count = state.get("replan_count", 0) + 1
-    err = (state.get("errors") or ["the query did not run"])[-1]
-    return {
-        "replan_count": count,
-        "feedback": f"the generated SQL failed ({err})",
-        "sql_attempts": 0,
-        "sql_issues": [],
-        "trace": _trace(state, f"replan #{count}: re-routing after failure"),
+def sql_node(state: dict) -> dict:
+    t0 = time.time()
+    attempt = _attempt(state, "sql")
+    updates, thoughts = run_sql_pipeline(state)
+
+    rows = updates.get("rows", [])
+    if not updates.get("sql"):
+        error_type, ok = "sql_no_query", False
+    elif not updates.get("exec_ok"):
+        error_type, ok = "sql_error", False
+    elif not rows:
+        error_type, ok = "sql_no_rows", True
+    else:
+        error_type, ok = "none", True
+    entry = {"action": "sql", "ok": ok, "error_type": error_type,
+             "row_bucket": (row_bucket(len(rows)) if updates.get("exec_ok")
+                            else "none"),
+             "attempt": attempt}
+
+    out = dict(updates)
+    out["step_log"] = _step(state, entry)
+    out["thoughts"] = _thoughts(state, *thoughts)
+    out["trace"] = _trace(state, f"sql (attempt {attempt}): ok={ok} "
+                                 f"rows={len(rows)} type={error_type}")
+    out["timings"] = _timing(state, f"sql{attempt}_ms",
+                             (time.time() - t0) * 1000)
+    return out
+
+
+# ── capabilities ─────────────────────────────────────────────────────────
+def chart_node(state: dict) -> dict:
+    t0 = time.time()
+    rows, cols = state.get("rows", []), state.get("columns", [])
+    ok, path = False, ""
+    if state.get("exec_ok") and rows:
+        res = make_chart(rows, cols, state["query"])
+        ok, path = res["ok"], res.get("path", "")
+    entry = {"action": "chart", "ok": ok,
+             "error_type": "none" if ok else "artifact_failed",
+             "row_bucket": "none", "attempt": _attempt(state, "chart")}
+    out = {
+        "step_log": _step(state, entry),
+        "thoughts": _thoughts(state, {"kind": "thinking",
+            "text": "Chart saved." if ok else "I couldn't chart this result."}),
+        "trace": _trace(state, f"chart: ok={ok}"),
+        "timings": _timing(state, "chart_ms", (time.time() - t0) * 1000),
     }
+    if ok:
+        out["chart_path"] = path
+    return out
 
 
-# ── 11. visualize (self-skips unless 'viz' in plan) ──────────────────────
-def visualize_node(state: dict) -> dict:
-    if "viz" not in state.get("exec_plan", []):
-        return {}
-    if not state.get("exec_ok") or not state.get("rows"):
-        return {"trace": _trace(state, "visualize: skipped (no data)")}
-    res = make_chart(state["rows"], state["columns"], state["query"])
-    if res["ok"]:
-        return {"chart_path": res["path"],
-                "trace": _trace(state, f"visualize: {res['chart_type']} "
-                                       f"chart → {res['path']}")}
-    return {"trace": _trace(state, f"visualize: failed ({res['error']})")}
-
-
-# ── 12. template (self-skips unless 'template' in plan) ──────────────────
-def template_node(state: dict) -> dict:
-    if "template" not in state.get("exec_plan", []):
-        return {}
-    if not state.get("exec_ok"):
-        return {"trace": _trace(state, "template: skipped (no data)")}
-    res = fill_report(state["query"], state.get("rows", []),
-                      state.get("columns", []), state.get("final_answer", ""),
-                      state.get("entities", {}))
-    if res["ok"]:
-        return {"document_path": res["path"],
-                "trace": _trace(state, f"template: report → {res['path']}")}
-    return {"trace": _trace(state, f"template: failed ({res['error']})")}
-
-
-# ── 13. email (self-skips unless 'email' in plan) — DRAFT ONLY ───────────
 def email_node(state: dict) -> dict:
-    if "email" not in state.get("exec_plan", []):
-        return {}
+    t0 = time.time()
     draft = compose_email_draft(
         state["query"], state.get("final_answer", ""),
         state.get("rows", []), state.get("columns", []))
-    return {"email_draft": draft,
-            "trace": _trace(state, f"email: {draft['status']} "
-                                   f"(to={draft.get('to_name')})")}
+    ok = draft.get("status") == "draft"
+    entry = {"action": "email", "ok": ok,
+             "error_type": "none" if ok else "email_no_recipient",
+             "row_bucket": "none", "attempt": _attempt(state, "email")}
+    return {
+        "email_draft": draft,
+        "step_log": _step(state, entry),
+        "thoughts": _thoughts(state, {"kind": "thinking",
+            "text": (f"Drafted an email to {draft.get('to_name')}." if ok
+                     else "Drafted an email, but no recipient was named.")}),
+        "trace": _trace(state, f"email: {draft.get('status')}"),
+        "timings": _timing(state, "email_ms", (time.time() - t0) * 1000),
+    }
 
 
-# ── 14. direct answer (greeting / meta / definition / unanswerable) ──────
-def direct_answer_node(state: dict) -> dict:
-    intent = state.get("intent", "greeting")
-    if intent == "greeting":
-        ans = ("Hello! I'm LatentMind V6 — ask me about telecom KPIs "
-               "(revenue, ARPU, churn, subscribers, OPEX, CAPEX, profit) "
-               "for any Algerian wilaya. I can also chart a result, draft an "
-               "email about it, or fill a report template.")
-    elif intent == "meta":
-        ans = ("I'm LatentMind V6, an analytics agent over the interndb "
-               "telecom database. I turn a question into SQL, run it, and "
-               "report the numbers — and on request I chart the result, "
-               "draft an email, or fill a report. I remember the "
-               "conversation, so follow-ups like 'and for Oran?' work.")
-    elif intent == "definition":
-        ans = get_retriever().definition_for(state["query"]) or (
-            "I don't have a stored definition for that term. Try ARPU, "
-            "churn rate, active base, total revenue, EBITDA, OPEX or CAPEX.")
-    else:  # unanswerable
-        ans = ("I can't answer that — it needs a KPI or table that isn't in "
-               "the database. Try revenue, ARPU, churn, subscribers, EBITDA, "
-               "or OPEX/CAPEX for an Algerian wilaya.")
-    return {"final_answer": ans, "trace": _trace(state, f"direct_answer ({intent})")}
+def template_node(state: dict) -> dict:
+    t0 = time.time()
+    res = fill_report(state["query"], state.get("rows", []),
+                      state.get("columns", []), state.get("final_answer", ""),
+                      state.get("entities", {}))
+    ok = res["ok"]
+    entry = {"action": "template", "ok": ok,
+             "error_type": "none" if ok else "artifact_failed",
+             "row_bucket": "none", "attempt": _attempt(state, "template")}
+    out = {
+        "step_log": _step(state, entry),
+        "thoughts": _thoughts(state, {"kind": "thinking",
+            "text": "Report saved." if ok else "I couldn't fill the report."}),
+        "trace": _trace(state, f"template: ok={ok}"),
+        "timings": _timing(state, "template_ms", (time.time() - t0) * 1000),
+    }
+    if ok:
+        out["document_path"] = res["path"]
+    return out
 
 
-# ── 15. clarify (low-confidence data query) ──────────────────────────────
-def clarify_node(state: dict) -> dict:
-    unresolved = (state.get("entities", {}) or {}).get(
-        "unresolved_wilayas", [])
-    extra = (f" I also didn't recognise: {', '.join(map(str, unresolved))}."
-             if unresolved else "")
-    ans = ("I'm not sure which metric you mean." + extra
-           + " Could you name a KPI — revenue, ARPU, churn, subscribers, "
-             "EBITDA, OPEX/CAPEX — and optionally a wilaya and time period?")
-    return {"final_answer": ans, "trace": _trace(state, "clarify: asked to rephrase")}
+# ── communicator (terminal) ──────────────────────────────────────────────
+_GREETING_TEXT = (
+    "Hello! I'm LatentMind V6 — ask me about telecom KPIs (revenue, ARPU, "
+    "churn, subscribers, OPEX, CAPEX, profit) for any Algerian wilaya. I can "
+    "chart a result, draft an email about it, or fill a report — just ask.")
+_META_TEXT = (
+    "I'm LatentMind V6, an analytics agent over the interndb telecom "
+    "database. I turn a question into SQL, run it, and report the numbers — "
+    "and on request I chart the result, draft an email, or fill a report. I "
+    "remember the conversation, so follow-ups like 'and for Oran?' work.")
+_UNANSWERABLE_TEXT = (
+    "I can't answer that — it needs a KPI or table that isn't in the "
+    "database. Try revenue, ARPU, churn, subscribers, EBITDA, or OPEX/CAPEX "
+    "for an Algerian wilaya.")
 
 
-# ── 16. finalize (append capability notes, update memory) ────────────────
-def finalize_node(state: dict) -> dict:
+def communicator_node(state: dict) -> dict:
+    """Compose the final answer from whatever the loop produced; roll memory."""
+    t0 = time.time()
+    intent = state.get("intent", "data")
     answer = state.get("final_answer", "")
+
+    if intent == "greeting":
+        answer = _GREETING_TEXT
+    elif intent == "meta":
+        answer = _META_TEXT
+    elif intent == "definition":
+        answer = get_retriever().definition_for(state["query"]) or (
+            "I don't have a stored definition for that term. Try ARPU, churn "
+            "rate, active base, total revenue, EBITDA, OPEX or CAPEX.")
+    elif intent == "unanswerable":
+        answer = _UNANSWERABLE_TEXT
+    elif not answer:
+        answer = ("I wasn't able to pull the data for that. Could you "
+                  "rephrase it with a clearer KPI, wilaya and period?")
+
+    # capability notes
     notes: list[str] = []
     if state.get("chart_path"):
         notes.append(f"📊 Chart saved: {state['chart_path']}")
@@ -395,22 +459,19 @@ def finalize_node(state: dict) -> dict:
     if notes:
         answer = answer + "\n\n" + "\n".join(notes)
 
+    # roll conversation memory: keep the last 2 raw turns, compact the rest
     routing = state.get("routing", {}) or {}
     turn = {
-        "query": state["query"],
-        "intent": state.get("intent", ""),
-        "answer": state.get("final_answer", ""),
+        "query": state["query"], "intent": intent,
+        "answer": state.get("final_answer", "") or answer,
         "sql": state.get("sql", ""),
         "tables": routing.get("tables", []),
         "columns": routing.get("columns", []),
     }
     turns_all = list(state.get("turns", [])) + [turn]
-
-    # Rolling compaction: keep last 2 raw turns; compress the rest into summary
     memory_summary = state.get("memory_summary", "")
     if len(turns_all) > _MAX_RAW_TURNS:
-        to_compact = turns_all[:len(turns_all) - _MAX_RAW_TURNS]
-        new_compact = _compact_turns(to_compact)
+        new_compact = _compact_turns(turns_all[:len(turns_all) - _MAX_RAW_TURNS])
         if new_compact:
             memory_summary = (memory_summary + "\n---\n" + new_compact
                               if memory_summary else new_compact)
@@ -423,37 +484,11 @@ def finalize_node(state: dict) -> dict:
         "final_answer": answer,
         "turns": turns_final,
         "memory_summary": memory_summary,
-        "trace": _trace(state, "finalize: answer ready, memory updated"),
+        "thoughts": _thoughts(state, {"kind": "answer", "text": answer}),
+        "trace": _trace(state, "communicator: answer ready, memory updated"),
+        "timings": _timing(state, "communicator_ms", (time.time() - t0) * 1000),
     }
-    if state.get("intent") == "data" and state.get("exec_ok"):
+    if intent == "data" and state.get("exec_ok"):
         out["last_rows"] = state.get("rows", [])
         out["last_columns"] = state.get("columns", [])
     return out
-
-
-# ── conditional-edge routers ─────────────────────────────────────────────
-def route_after_plan(state: dict) -> str:
-    return ("direct_answer"
-            if (state.get("exec_plan") or [""])[0] == "direct_answer"
-            else "retrieve")
-
-
-def route_after_orchestrator(state: dict) -> str:
-    return ("clarify" if (state.get("exec_plan") or [""])[0] == "clarify"
-            else "resolve_entities")
-
-
-def route_after_validate(state: dict) -> str:
-    valid = state.get("sql_valid", False)
-    needs_fix = (not valid) or bool(state.get("sql_issues"))
-    if needs_fix and state.get("sql_attempts", 0) <= V6Config.SQL_MAX_RETRIES:
-        return "sql_generate"
-    return "sql_execute" if valid else "answer"
-
-
-def route_after_answer(state: dict) -> str:
-    failed = (state.get("intent") == "data" and bool(state.get("sql"))
-              and not state.get("exec_ok"))
-    if failed and state.get("replan_count", 0) < V6Config.MAX_REPLAN:
-        return "replan"
-    return "visualize"

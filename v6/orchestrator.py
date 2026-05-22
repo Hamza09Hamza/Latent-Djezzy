@@ -1,7 +1,7 @@
 """v6/orchestrator.py — Deterministic validation + plan assembly.
 
-The *decision* of what a query wants now belongs to the latent planner
-(planner.py). What stays here is deliberately deterministic — because it is
+The *decision* of what a query wants belongs to the policy brain
+(brain.py). What stays here is deliberately deterministic — because it is
 fact-checking, not guessing:
 
   - validate the router SLM's tables/columns against the live schema
@@ -12,9 +12,9 @@ fact-checking, not guessing:
   - judge confidence and send a hopeless query to `clarify`,
   - assemble the ordered plan.
 
-Dynamic decision (the planner) + deterministic fact-check (here) = the brain.
-Only data queries reach this module; greeting / meta / definition /
-unanswerable were routed straight to direct_answer by the planner.
+Dynamic decision (the brain) + deterministic fact-check (here) is the core.
+This module runs inside the `sql` action, which the brain selects only for
+data queries; greeting / meta / definition / unanswerable never reach it.
 """
 
 from __future__ import annotations

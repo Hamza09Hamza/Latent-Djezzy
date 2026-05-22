@@ -31,21 +31,22 @@ DIVIDER = "─" * 68
 
 
 def _fmt_timings(t: dict) -> str:
-    parts = []
-    for key, label in (("retrieve_ms", "rag"), ("router_ms", "router"),
-                        ("sqlgen_ms", "sqlgen"), ("exec_ms", "exec")):
-        if t.get(key):
-            parts.append(f"{label} {t[key] / 1000:.2f}s")
     total = t.get("total_ms", 0) / 1000
+    brain = sum(v for k, v in t.items() if k.startswith("brain")) / 1000
+    sql = sum(v for k, v in t.items() if k.startswith("sql")) / 1000
+    parts = [f"brain {brain:.2f}s"]
+    if t.get("rag_ms"):
+        parts.append(f"rag {t['rag_ms'] / 1000:.2f}s")
+    if sql:
+        parts.append(f"sql {sql:.2f}s")
     return " + ".join(parts) + f" = {total:.2f}s total"
 
 
 def print_result(res: dict, show_trace: bool = False) -> None:
-    ps = res.get("plan_scores") or {}
     intent = res.get("intent", "?")
-    caps   = res.get("capabilities", [])
-    score  = ps.get("score", 0.0)
-    print(f"\n[intent={intent}  conf={score:.2f}  caps={caps}]")
+    steps = res.get("brain_step", 0)
+    actions = [s.get("action") for s in res.get("step_log", [])]
+    print(f"\n[intent={intent}  brain steps={steps}  actions={actions}]")
 
     sql = res.get("sql", "")
     if sql:
@@ -96,7 +97,7 @@ def banner() -> None:
     print("  LatentMind V6 — LangGraph agentic analytics")
     print(f"  model:   {V6Config.slm_id()}")
     print(f"  backend: {backend}")
-    print(f"  planner: {V6Config.PLANNER_MODE}")
+    print(f"  brain:   seuil {V6Config.BRAIN_SEUIL}  max {V6Config.BRAIN_MAX_STEPS} steps")
     print(f"  4-bit:   {V6Config.USE_4BIT}   speculative: {V6Config.USE_SPECULATIVE}")
     print(f"  output:  {V6Config.OUTPUT_DIR}")
     print(DIVIDER)
@@ -105,9 +106,9 @@ def banner() -> None:
 DEMO_QUERIES = [
     "Hello, what can you do?",
     "What does ARPU mean?",
-    "What is the total revenue for Oran in 2024?",
+    "What is the total revenue for Oran in 2025?",
     "Compare churn rates between Algiers and Constantine last quarter",
-    "Show me a bar chart of total revenue by wilaya for 2024",
+    "Show me a bar chart of total revenue by wilaya for 2025",
     "Which wilaya had the highest churn rate?",
 ]
 
