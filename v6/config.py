@@ -76,7 +76,7 @@ class V6Config:
     PLANNER_MODE       = _env("PLANNER", "prototype")     # prototype | mlp
     PLANNER_HEAD_PATH  = os.path.join(MODELS_DIR, "planner_head.pt")
     PLANNER_PROTOTYPES = os.path.join(DATA_DIR, "planner_prototypes.json")
-    CAP_THRESHOLD      = 0.46      # capability cosine above this → active
+    CAP_THRESHOLD      = 0.30      # capability cosine above this → active
     PLANNER_LOW_CONF   = 0.40      # intent score below this → weak plan
     MAX_REPLAN         = 1         # times the graph may loop back to re-plan
 

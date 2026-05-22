@@ -87,7 +87,7 @@ def plan_node(state: dict) -> dict:
     note = ""
     if (decision.followup and turns
             and turns[-1].get("intent") == "data"
-            and intent not in ("data", "greeting", "meta", "unanswerable")):
+            and intent not in ("data", "greeting", "meta", "unanswerable", "definition")):
         note = f" [follow-up → data, was {intent}]"
         intent = "data"
 

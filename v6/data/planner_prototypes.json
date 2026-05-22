@@ -66,7 +66,11 @@
       "show me a chart", "plot the trend", "draw a bar graph",
       "visualize the revenue", "make a graph of it", "give me a chart",
       "plot it", "show this as a graph", "create a line chart",
-      "can you chart that", "a visual of the data"
+      "can you chart that", "a visual of the data",
+      "show me a bar chart", "bar chart of revenue", "bar chart by wilaya",
+      "line chart of monthly", "plot the monthly trend",
+      "show the distribution as a chart", "chart the results",
+      "show a graph", "create a chart", "render a chart"
     ],
     "email": [
       "email this to the finance director", "send it to Sarah",

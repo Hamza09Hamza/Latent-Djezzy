@@ -158,6 +158,8 @@ class DBSchema:
                 f"Data covers weekly snapshots from {self.date_range[0]} to "
                 f"{self.date_range[1]}; resolve relative time expressions "
                 f"against {self.date_range[1]}.",
+                "TIME RULE: The date column is `week_start` (NOT `time`, `date`, "
+                "`timestamp`, or `period`). Always use `week_start` for date filters.",
             ]
         return "\n".join(lines)
 
