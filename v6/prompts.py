@@ -43,6 +43,15 @@ Rules:
   "wilaya" in "columns".
 - For greeting / meta / definition / unanswerable, leave tables, columns and
   filter lists empty.
+- COMPARISON RULE: when the user compares two or more wilayas (e.g. "between
+  A and B", "compare A and B", "A vs B"), list ALL of them in "wilayas". Never
+  drop one silently.
+- FOLLOW-UP RULE: if the question is very short and names only a wilaya with
+  no KPI, it is a follow-up — copy the tables and columns from the conversation
+  history and just change the wilaya filter.
+- UNANSWERABLE RULE: if the metric asked for (e.g. satellite coverage, brand
+  sentiment, stock price, carbon footprint) does not appear in any table or
+  column in the schema, set intent to "unanswerable".
 
 Examples:
 
@@ -61,11 +70,21 @@ User question: total revenue in Oran
 User question: average churn for prepaid in Algiers
 {"intent": "data", "tables": ["prepaid_kpi", "dim_location"], "columns": ["churn_rate", "wilaya"], "filters": {"wilayas": ["Algiers"], "segment": "prepaid", "time": null}, "notes": "churn_rate in prepaid_kpi; join dim_location for the wilaya"}
 
+User question: compare churn rate between Algiers and Constantine
+{"intent": "data", "tables": ["prepaid_kpi", "dim_location"], "columns": ["churn_rate", "wilaya"], "filters": {"wilayas": ["Algiers", "Constantine"], "segment": null, "time": null}, "notes": "comparison: both wilayas go into wilayas list; SQL must GROUP BY wilaya to return both rows"}
+
 User question: show the weekly arpu trend for prepaid
 {"intent": "data", "tables": ["prepaid_kpi"], "columns": ["arpu", "week_start"], "filters": {"wilayas": [], "segment": "prepaid", "time": null}, "notes": "arpu over time from prepaid_kpi grouped by week_start, no wilaya filter"}
 
+User question: and for Constantine?
+[context: previous query was about total_revenue from global_revenue]
+{"intent": "data", "tables": ["global_revenue", "dim_location"], "columns": ["total_revenue", "wilaya"], "filters": {"wilayas": ["Constantine"], "segment": null, "time": null}, "notes": "follow-up: same KPI (total_revenue) as previous turn, just change the wilaya to Constantine"}
+
 User question: what is the fpa_quantum_score
-{"intent": "unanswerable", "tables": [], "columns": [], "filters": {"wilayas": [], "segment": null, "time": null}, "notes": "fpa_quantum_score is not in the schema"}"""
+{"intent": "unanswerable", "tables": [], "columns": [], "filters": {"wilayas": [], "segment": null, "time": null}, "notes": "fpa_quantum_score is not in the schema"}
+
+User question: what is the satellite coverage ratio for Oran
+{"intent": "unanswerable", "tables": [], "columns": [], "filters": {"wilayas": [], "segment": null, "time": null}, "notes": "satellite coverage ratio is not a column in any table in the schema"}"""
 
 _SQLGEN_BASE = """PHASE 2 - SQL GENERATION.
 
@@ -114,7 +133,9 @@ def build_router_messages(query: str, schema_prompt: str, knowledge: str,
     """Assemble the chat messages for the router (phase 1)."""
     parts = [schema_prompt, "", "Reference knowledge:", knowledge]
     if history:
-        parts += ["", "Recent conversation (oldest first, context only):",
+        parts += ["", "Recent conversation (use for follow-up context — "
+                      "if the new question is short and mentions no KPI, "
+                      "inherit tables and columns from the most recent data turn):",
                   history]
     if feedback:
         parts += ["", f"A previous attempt failed: {feedback}. Re-map the "

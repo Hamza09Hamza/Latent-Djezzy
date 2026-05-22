@@ -18,8 +18,15 @@ data queries; greeting / meta / definition / unanswerable never reach it.
 """
 
 from __future__ import annotations
+import re
 
 from .config import V6Config
+
+# Structural columns that are never KPI indicators — if routing only contains
+# these (plus dim_location), the query names no concrete metric and is likely
+# a short follow-up that the router mis-classified.
+_STRUCTURAL_COLS = {"wilaya", "location_id", "week_start", "id", "commune",
+                    "wilaya_code", "region", "code"}
 
 
 def _last_data_turn(turns: list[dict]) -> dict | None:
@@ -27,6 +34,14 @@ def _last_data_turn(turns: list[dict]) -> dict | None:
         if turn.get("intent") == "data" and turn.get("tables"):
             return turn
     return None
+
+
+def _is_implicit_followup(query: str, valid_cols: list[str]) -> bool:
+    """True when the query is so short / KPI-free that it's almost certainly
+    a follow-up like 'and for Constantine?' or 'what about Oran?'."""
+    words = re.sub(r"[^\w\s]", " ", query or "").split()
+    metric_cols = [c for c in valid_cols if c not in _STRUCTURAL_COLS]
+    return len(words) <= 6 and not metric_cols
 
 
 def assemble(query: str, routing: dict, capabilities: list[str],
@@ -47,17 +62,23 @@ def assemble(query: str, routing: dict, capabilities: list[str],
     if invalid_cols:
         trace.append(f"dropped unknown columns {invalid_cols}")
 
-    # follow-up: inherit tables / columns from the last data turn
+    # follow-up: inherit tables / columns from the last data turn.
+    # Fire when (a) no valid tables at all, OR (b) the query is short and
+    # the router produced only structural columns — a sign it grabbed the
+    # wrong table to fill in a follow-up like "and for Constantine?".
     inherited = False
-    if not valid_tables:
+    force_inherit = _is_implicit_followup(query, valid_cols)
+    if not valid_tables or force_inherit:
         last = _last_data_turn(turns)
         if last:
-            valid_tables = [t for t in last.get("tables", [])
-                            if schema.has_table(t)]
-            valid_cols = valid_cols or list(last.get("columns", []))
-            inherited = bool(valid_tables)
-            if inherited:
-                trace.append(f"inherited tables from memory {valid_tables}")
+            inherited_tables = [t for t in last.get("tables", [])
+                                if schema.has_table(t)]
+            if inherited_tables:
+                valid_tables = inherited_tables
+                valid_cols = list(last.get("columns", []))
+                inherited = True
+                trace.append(f"inherited tables from memory {valid_tables}"
+                             + (" (implicit follow-up)" if force_inherit else ""))
     elif followup:
         trace.append("follow-up detected")
 
