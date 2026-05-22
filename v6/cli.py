@@ -1,8 +1,9 @@
-"""v6/cli.py — Interactive REPL and demo runner for the V6 agent.
+"""v6/cli.py — Interactive REPL for the V6 agent.
 
-    python3 -m v6.cli                 # run the demo queries
-    python3 -m v6.cli -i              # interactive REPL
-    python3 -m v6.cli -t "question"   # one question, with the node trace
+    python3 -m v6.cli                  # demo queries
+    python3 -m v6.cli -i               # interactive REPL
+    python3 -m v6.cli "your question"  # one-shot question
+    python3 -m v6.cli -t "question"    # one-shot with node trace
 
 REPL commands:  :trace  :reset  :thread <id>  :send  :quit
 """
@@ -11,7 +12,6 @@ from __future__ import annotations
 import os
 import sys
 
-# ── resolve the SQLite backend before any v6 module reads the env ────────
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if not os.environ.get("V6_USE_SQLITE") and not os.environ.get("V5_USE_SQLITE"):
     for _p in ("/content/interndb.sqlite", os.path.join(_REPO, "interndb.sqlite")):
@@ -20,11 +20,12 @@ if not os.environ.get("V6_USE_SQLITE") and not os.environ.get("V5_USE_SQLITE"):
             os.environ["V6_SQLITE_PATH"] = _p
             break
 
-import argparse  # noqa: E402
+import argparse
 
-from .capabilities import send_email  # noqa: E402
-from .config import V6Config  # noqa: E402
-from .graph import LatentMindV6  # noqa: E402
+from .capabilities import send_email
+from .config import V6Config
+from .graph import LatentMindV6
+from .slm import get_slm
 
 DIVIDER = "─" * 68
 
@@ -40,25 +41,52 @@ def _fmt_timings(t: dict) -> str:
 
 
 def print_result(res: dict, show_trace: bool = False) -> None:
+    ps = res.get("plan_scores") or {}
     intent = res.get("intent", "?")
-    plan = "→".join(res.get("plan", []))
-    conf = res.get("confidence", "?")
-    grounding = res.get("grounding", 0.0)
-    print(f"\n[{intent} | plan: {plan} | confidence: {conf} | "
-          f"grounding: {grounding:.3f}]")
+    caps   = res.get("capabilities", [])
+    score  = ps.get("score", 0.0)
+    print(f"\n[intent={intent}  conf={score:.2f}  caps={caps}]")
 
-    if res.get("sql"):
-        print(f"  SQL: {res['sql']}")
+    sql = res.get("sql", "")
+    if sql:
+        short = sql.replace("\n", " ")[:100]
+        print(f"  SQL: {short}{'…' if len(sql) > 100 else ''}")
+
+    rows = res.get("rows", [])
+    if rows:
+        print(f"  rows: {len(rows)}")
 
     print()
-    print(res.get("answer", "(no answer)"))
+    print(res.get("final_answer", "(no answer)"))
+
+    chart = res.get("chart_path", "")
+    if chart:
+        print(f"\n  Chart saved → {chart}")
+
+    draft = res.get("email_draft")
+    if draft:
+        to = draft.get("to_name", "?")
+        subj = draft.get("subject", "")
+        print(f"\n  Email draft → {to} | {subj}")
+        print(f"  (type :send to send)")
+
+    doc = res.get("document_path", "")
+    if doc:
+        print(f"\n  Report saved → {doc}")
 
     if show_trace:
         print("\n  trace:")
         for line in res.get("trace", []):
             print(f"    · {line}")
 
-    print(f"\n⏱  {_fmt_timings(res.get('timings', {}))}")
+    print(f"\n  {_fmt_timings(res.get('timings', {}))}")
+
+
+def _clear_cache(thread: str) -> None:
+    try:
+        get_slm().clear_thread(thread)
+    except Exception:
+        pass
 
 
 def banner() -> None:
@@ -69,19 +97,18 @@ def banner() -> None:
     print(f"  model:   {V6Config.slm_id()}")
     print(f"  backend: {backend}")
     print(f"  planner: {V6Config.PLANNER_MODE}")
-    print(f"  4-bit:   {V6Config.USE_4BIT}   flash-attn: {V6Config.USE_FLASH_ATTN}")
+    print(f"  4-bit:   {V6Config.USE_4BIT}   speculative: {V6Config.USE_SPECULATIVE}")
+    print(f"  output:  {V6Config.OUTPUT_DIR}")
     print(DIVIDER)
 
 
 DEMO_QUERIES = [
-    "hello",
-    "what does ARPU mean",
-    "what was the total revenue in Oran",
-    "compare churn rate between Algiers and Constantine",
-    "show the weekly arpu trend for prepaid",
-    "chart the average revenue by wilaya",
-    "email the average prepaid churn by wilaya to the finance director",
-    "and what about Oran?",
+    "Hello, what can you do?",
+    "What does ARPU mean?",
+    "What is the total revenue for Oran in 2024?",
+    "Compare churn rates between Algiers and Constantine last quarter",
+    "Show me a bar chart of total revenue by wilaya for 2024",
+    "Which wilaya had the highest churn rate?",
 ]
 
 
@@ -90,10 +117,11 @@ def run_demo(agent: LatentMindV6, show_trace: bool) -> None:
         print(f"\n{DIVIDER}\nQ: {q}\n{DIVIDER}")
         res = agent.ask(q, thread_id="demo", verbose=False)
         print_result(res, show_trace)
+        _clear_cache("demo")
 
 
 def run_repl(agent: LatentMindV6, show_trace: bool) -> None:
-    print("\nInteractive mode. Type a question, or :quit to exit.\n")
+    print("\nInteractive mode. Commands: :trace  :reset  :thread <id>  :send  :quit\n")
     thread = "session"
     last_draft = None
     while True:
@@ -108,12 +136,12 @@ def run_repl(agent: LatentMindV6, show_trace: bool) -> None:
             break
         if line == ":trace":
             show_trace = not show_trace
-            print(f"  trace display {'on' if show_trace else 'off'}")
+            print(f"  trace {'on' if show_trace else 'off'}")
             continue
         if line == ":reset":
             agent.reset()
             last_draft = None
-            print("  conversation memory cleared")
+            print("  conversation reset")
             continue
         if line.startswith(":thread"):
             parts = line.split(maxsplit=1)
@@ -122,37 +150,37 @@ def run_repl(agent: LatentMindV6, show_trace: bool) -> None:
             continue
         if line == ":send":
             if not last_draft or not last_draft.get("to"):
-                print("  no email draft with a recipient to send")
+                print("  no email draft with a recipient")
                 continue
             print(f"  sending to {last_draft['to']} ...")
             r = send_email(last_draft)
-            print("  sent ✓" if r["ok"] else f"  failed: {r['error']}")
+            print("  sent" if r["ok"] else f"  failed: {r['error']}")
             continue
 
         res = agent.ask(line, thread_id=thread)
         print_result(res, show_trace)
+        _clear_cache(thread)
         last_draft = res.get("email_draft")
-        if last_draft and last_draft.get("to"):
-            print("  (type :send to send this drafted email)")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="LatentMind V6 agent")
-    ap.add_argument("query", nargs="?", help="a single question to run")
+    ap.add_argument("query", nargs="?", help="a single question")
     ap.add_argument("-i", "--interactive", action="store_true",
                     help="interactive REPL")
     ap.add_argument("-t", "--trace", action="store_true",
-                    help="show the node trace")
+                    help="show node trace")
     args = ap.parse_args()
 
     banner()
-    print("\nloading pipeline (BGE-M3 + dual-role SLM)...")
+    print("\nloading models (BGE-M3 + SLM)...")
     agent = LatentMindV6()
     print("ready.\n")
 
     if args.query:
         res = agent.ask(args.query, thread_id="cli")
         print_result(res, args.trace)
+        _clear_cache("cli")
     elif args.interactive:
         run_repl(agent, args.trace)
     else:
