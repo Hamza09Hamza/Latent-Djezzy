@@ -41,14 +41,34 @@ def _timing(state: dict, key: str, ms: float) -> dict:
     return t
 
 
-def _history_text(turns: list[dict], limit: int = 2) -> str:
-    """Return the last `limit` turns as context for the router.
+_MAX_COMPACT_CHARS = 600
+_MAX_RAW_TURNS = 2
 
-    Keep it short — long history grows the KV cache and causes OOM on GPU.
-    """
-    if not turns:
+
+def _compact_turns(turns: list[dict]) -> str:
+    """Deterministic compression: extract key facts without LLM overhead."""
+    parts = []
+    for t in turns:
+        q = (t.get("query") or "")[:70]
+        intent = t.get("intent", "")
+        answer = (t.get("answer") or "")
+        if not q:
+            continue
+        if intent == "data" and answer:
+            parts.append(f"Q: {q}\nA: {answer[:180]}")
+        elif intent == "definition":
+            parts.append(f"Q: {q} [definition]")
+    return ("\n---\n".join(parts))[:_MAX_COMPACT_CHARS] if parts else ""
+
+
+def _history_text(turns: list[dict], memory_summary: str = "",
+                  limit: int = _MAX_RAW_TURNS) -> str:
+    """Recent raw turns + compacted older memory for the router prompt."""
+    if not turns and not memory_summary:
         return ""
     lines: list[str] = []
+    if memory_summary:
+        lines.append(f"[Earlier context]\n{memory_summary}")
     for i, t in enumerate(turns[-limit:], 1):
         lines.append(f"{i}. Q: {t.get('query', '')}")
         if t.get("intent") == "data" and t.get("answer"):
@@ -83,7 +103,9 @@ def _summarize_rows(rows: list[dict], cols: list[str]) -> str:
 def plan_node(state: dict) -> dict:
     t0 = time.time()
     turns = state.get("turns", [])
-    decision = get_planner().plan(state["query"], _history_text(turns))
+    decision = get_planner().plan(
+        state["query"],
+        _history_text(turns, state.get("memory_summary", "")))
     intent = decision.intent
 
     # a terse follow-up ("and for Oran?") continues the prior turn's thread —
@@ -132,7 +154,7 @@ def retrieve_node(state: dict) -> dict:
 # ── 3. router (SLM phase 1 — schema mapping) ─────────────────────────────
 def router_node(state: dict) -> dict:
     schema = get_db_schema()
-    history = _history_text(state.get("turns", []))
+    history = _history_text(state.get("turns", []), state.get("memory_summary", ""))
     messages = build_router_messages(
         state["query"], schema.prompt(), state.get("knowledge", ""),
         history, feedback=state.get("feedback", ""))
@@ -382,11 +404,25 @@ def finalize_node(state: dict) -> dict:
         "tables": routing.get("tables", []),
         "columns": routing.get("columns", []),
     }
-    turns = (list(state.get("turns", [])) + [turn])[-V6Config.MAX_TURNS:]
+    turns_all = list(state.get("turns", [])) + [turn]
+
+    # Rolling compaction: keep last 2 raw turns; compress the rest into summary
+    memory_summary = state.get("memory_summary", "")
+    if len(turns_all) > _MAX_RAW_TURNS:
+        to_compact = turns_all[:len(turns_all) - _MAX_RAW_TURNS]
+        new_compact = _compact_turns(to_compact)
+        if new_compact:
+            memory_summary = (memory_summary + "\n---\n" + new_compact
+                              if memory_summary else new_compact)
+            memory_summary = memory_summary[-_MAX_COMPACT_CHARS:]
+        turns_final = turns_all[-_MAX_RAW_TURNS:]
+    else:
+        turns_final = turns_all
 
     out = {
         "final_answer": answer,
-        "turns": turns,
+        "turns": turns_final,
+        "memory_summary": memory_summary,
         "trace": _trace(state, "finalize: answer ready, memory updated"),
     }
     if state.get("intent") == "data" and state.get("exec_ok"):

@@ -222,3 +222,63 @@ def get_slm() -> DualRoleSLM:
     if _slm is None:
         _slm = DualRoleSLM()
     return _slm
+
+
+class Polisher:
+    """0.5B model for streaming response polish. Loaded lazily on first use."""
+
+    HUB_ID = "Qwen/Qwen2.5-0.5B-Instruct"
+
+    def __init__(self):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        self.device = V6Config.device()
+        dtype = (torch.float16 if self.device.type in ("cuda", "mps")
+                 else torch.float32)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.HUB_ID)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.HUB_ID, torch_dtype=dtype,
+            device_map={"": str(self.device)})
+        self.model.eval()
+
+    def stream(self, raw_answer: str, question: str = ""):
+        """Yield polished tokens one-by-one via TextIteratorStreamer."""
+        from transformers import TextIteratorStreamer
+
+        system = (
+            "You are a professional telecom analytics assistant. "
+            "Rewrite the answer in clear, natural language. "
+            "Keep ALL numbers and KPI values exactly as given. "
+            "Be concise — maximum 3 sentences.")
+        user_msg = (f"Q: {question}\nA: {raw_answer}" if question
+                    else raw_answer)
+
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": user_msg}]
+        inputs = self.tokenizer.apply_chat_template(
+            messages, return_tensors="pt",
+            add_generation_prompt=True).to(self.device)
+
+        streamer = TextIteratorStreamer(
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+        t = threading.Thread(target=self.model.generate, kwargs={
+            "input_ids": inputs,
+            "streamer": streamer,
+            "max_new_tokens": 120,
+            "do_sample": True,
+            "temperature": 0.4,
+            "pad_token_id": self.tokenizer.eos_token_id,
+        })
+        t.start()
+        for token in streamer:
+            yield token
+        t.join()
+
+
+_polisher: Polisher | None = None
+
+
+def get_polisher() -> Polisher:
+    global _polisher
+    if _polisher is None:
+        _polisher = Polisher()
+    return _polisher

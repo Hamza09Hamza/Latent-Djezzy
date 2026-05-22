@@ -19,7 +19,8 @@ class AgentState(TypedDict, total=False):
     thread_id: str
 
     # ── conversation memory (persisted by the checkpointer) ──────────────
-    turns: list[dict]            # [{query, intent, answer, sql}, ...]
+    turns: list[dict]            # last 2 raw turns (older ones compacted)
+    memory_summary: str          # compacted summary of older turns
     last_rows: list[dict]        # rows from the previous data turn
     last_columns: list[str]
     carried_entities: dict       # entities resolved on the previous turn

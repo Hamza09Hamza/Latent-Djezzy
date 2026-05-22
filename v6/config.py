@@ -31,6 +31,7 @@ class V6Config:
     KPI_CATALOG_PATH = os.path.join(DATA_DIR, "kpi_catalog.json")
 
     # Charts and rendered reports land here (created on demand).
+    # Kept as class attr for CLI banner; use output_dir() for actual paths.
     OUTPUT_DIR = _env("OUTPUT_DIR") or (
         "/content/v6_output" if os.path.isdir("/content")
         else os.path.join(_REPO_ROOT, "v6_output"))
@@ -151,13 +152,21 @@ class V6Config:
                 else cls.BGE_M3_HUB_ID)
 
     @classmethod
+    def output_dir(cls) -> str:
+        """Re-read the env var at call time so Cell 4 env changes take effect."""
+        env_val = os.environ.get("V6_OUTPUT_DIR", os.environ.get("V5_OUTPUT_DIR", ""))
+        return (env_val or
+                ("/content/v6_output" if os.path.isdir("/content")
+                 else os.path.join(cls.REPO_ROOT, "v6_output")))
+
+    @classmethod
     def chart_dir(cls) -> str:
-        d = os.path.join(cls.OUTPUT_DIR, "charts")
+        d = os.path.join(cls.output_dir(), "charts")
         os.makedirs(d, exist_ok=True)
         return d
 
     @classmethod
     def report_dir(cls) -> str:
-        d = os.path.join(cls.OUTPUT_DIR, "reports")
+        d = os.path.join(cls.output_dir(), "reports")
         os.makedirs(d, exist_ok=True)
         return d
