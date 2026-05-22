@@ -67,13 +67,33 @@ def validate_sql(sql: str, schema=None) -> dict:
     return {"valid": not errors, "errors": errors, "sql": s}
 
 
-# ── intent-consistency check (the hallucinated-filter guard) ─────────────
-def consistency_check(sql: str, entities: dict, query: str = "") -> list[str]:
-    """Flag filters in the SQL that disagree with the resolved intent."""
+# ── intent-consistency check (the hallacinated-filter guard) ─────────────
+def consistency_check(sql: str, entities: dict, query: str = "", schema=None) -> list[str]:
+    """Flag filters in the SQL that disagree with the resolved intent, and catch hallucinated columns."""
     issues: list[str] = []
     s = sql or ""
     low = s.lower()
     requested = {w.lower() for w in (entities or {}).get("wilayas", [])}
+
+    # check for hallucinated columns (schema parameter passed by caller)
+    if schema is not None:
+        all_valid_cols = {c for t in schema.all_tables()
+                         for c in schema.column_names(t)}
+        col_refs = re.findall(r"\b(?:[a-z_]\w*\.)?([a-z_]\w*)\b", s,
+                              re.IGNORECASE)
+        for col in set(col_refs):
+            # skip SQL keywords and common tokens
+            if (col.lower() not in {"select", "from", "where", "and", "or",
+                                     "join", "on", "as", "group", "by",
+                                     "order", "limit", "having", "in", "not",
+                                     "is", "null", "case", "when", "then",
+                                     "else", "end", "with", "as", "distinct",
+                                     "asc", "desc", "sum", "avg", "count",
+                                     "max", "min", "cast", "to", "left",
+                                     "right", "inner", "outer", "cross",
+                                     "union", "except", "intersect"}
+                    and col not in all_valid_cols):
+                issues.append(f"column '{col}' does not exist in any table")
 
     resolver = get_resolver()
     sql_wilayas: set[str] = set()

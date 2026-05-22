@@ -78,12 +78,21 @@ group by a wilaya you MUST join dim_location:
     JOIN dim_location dl ON <table>.location_id = dl.location_id
 and then use dl.wilaya. No metric table has a `wilaya` column of its own.
 
+COMPARISON RULE: If the user asks to compare or contrast multiple entities
+(e.g., "between A and B", "compare A and B", "A vs B"), your query MUST
+return a separate row for EACH entity. Use:
+  - WHERE dl.wilaya IN ('A', 'B') and GROUP BY dl.wilaya, or
+  - UNION queries if the entities are in different tables.
+Do NOT filter by only one wilaya when two or more are mentioned.
+
 Rules:
 - Use ONLY tables and columns from the schema and the routing analysis above.
 - Apply ONLY the filters from the routing object. Do NOT add a wilaya, date
   or segment the user did not ask for.
 - For a "trend" or "over time" question, GROUP BY week_start and ORDER BY
   week_start; do not group by wilaya unless the user compares wilayas.
+- For multi-entity comparisons, GROUP BY the entity (wilaya/segment) to show
+  all requested entities in the result.
 - Put literal values directly in the WHERE clause; no placeholders.
 - Output ONLY the SQL statement: no JSON, no markdown, no comment.
 - Start the output with SELECT or WITH."""
@@ -147,13 +156,23 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
                    f"FROM {t} {alias} {join}{where} "
                    f"GROUP BY {alias}.week_start ORDER BY {alias}.week_start")
         shape = "a weekly trend"
+        if len(wilayas) > 1:
+            where_multi = (f" WHERE dl.wilaya IN ("
+                          + ", ".join(f"'{w}'" for w in wilayas) + ")")
+            example = (f"SELECT dl.wilaya, {alias}.week_start, "
+                      f"{agg or alias + '.*'} "
+                      f"FROM {t} {alias} {join}{where_multi} "
+                      f"GROUP BY dl.wilaya, {alias}.week_start "
+                      f"ORDER BY dl.wilaya, {alias}.week_start")
+            shape = "a weekly trend by wilaya"
     elif join:
         where = (" WHERE dl.wilaya IN ("
                  + ", ".join(f"'{w}'" for w in wilayas) + ")"
                  if wilayas else "")
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
                    f"FROM {t} {alias} {join}{where} GROUP BY dl.wilaya")
-        shape = "an aggregate by wilaya"
+        shape = ("a comparison across wilayas" if len(wilayas) > 1
+                else "an aggregate by wilaya")
     else:
         example = f"SELECT {agg or '*'} FROM {t} {alias}"
         shape = "an aggregate"

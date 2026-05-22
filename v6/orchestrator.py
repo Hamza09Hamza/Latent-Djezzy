@@ -43,6 +43,9 @@ def assemble(query: str, routing: dict, capabilities: list[str],
         trace.append(f"dropped unknown tables {dropped}")
     all_cols = {c for t in schema.all_tables() for c in schema.column_names(t)}
     valid_cols = [c for c in routing.get("columns", []) if c in all_cols]
+    invalid_cols = [c for c in routing.get("columns", []) if c not in all_cols]
+    if invalid_cols:
+        trace.append(f"dropped unknown columns {invalid_cols}")
 
     # follow-up: inherit tables / columns from the last data turn
     inherited = False

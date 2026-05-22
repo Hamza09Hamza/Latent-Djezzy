@@ -265,11 +265,12 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
         res = get_slm().run_sqlgen(thread, instr)
         v = validate_sql(clean_sql(res.get("sql_output", "")), schema)
         sql, sql_valid = v["sql"], v["valid"]
-        sql_issues = list(v["errors"]) + consistency_check(sql, entities, query)
+        sql_issues = list(v["errors"]) + consistency_check(sql, entities, query,
+                                                           schema=schema)
         if sql_valid and not sql_issues:
             break
     thoughts.append({"kind": "thinking",
-                     "text": (f"Built the query: {sql[:80]}" if sql
+                     "text": (f"Built the query: {sql}" if sql
                               else "I couldn't form a valid query.")})
 
     # execute
