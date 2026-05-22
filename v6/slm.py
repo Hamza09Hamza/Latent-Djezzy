@@ -254,24 +254,36 @@ class Polisher:
 
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": user_msg}]
-        inputs = self.tokenizer.apply_chat_template(
-            messages, return_tensors="pt",
-            add_generation_prompt=True).to(self.device)
+        # tokenize=False → separate tokenizer call (apply_chat_template returns
+        # BatchEncoding in newer transformers, not a raw tensor)
+        text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+        enc = self.tokenizer(text, return_tensors="pt").to(self.device)
 
         streamer = TextIteratorStreamer(
             self.tokenizer, skip_prompt=True, skip_special_tokens=True)
-        t = threading.Thread(target=self.model.generate, kwargs={
-            "input_ids": inputs,
-            "streamer": streamer,
-            "max_new_tokens": 120,
-            "do_sample": True,
-            "temperature": 0.4,
-            "pad_token_id": self.tokenizer.eos_token_id,
-        })
+        exc_holder: list[BaseException] = []
+
+        def _gen():
+            try:
+                self.model.generate(
+                    **enc,
+                    streamer=streamer,
+                    max_new_tokens=120,
+                    do_sample=True,
+                    temperature=0.4,
+                    pad_token_id=self.tokenizer.eos_token_id)
+            except Exception as e:  # noqa: BLE001
+                exc_holder.append(e)
+                streamer.end()  # unblock the iterator
+
+        t = threading.Thread(target=_gen, daemon=True)
         t.start()
         for token in streamer:
             yield token
         t.join()
+        if exc_holder:
+            raise exc_holder[0]
 
 
 _polisher: Polisher | None = None
