@@ -86,7 +86,8 @@ def plan_node(state: dict) -> dict:
     # a memory-continuation rule, not query classification
     note = ""
     if (decision.followup and turns
-            and turns[-1].get("intent") == "data" and intent != "data"):
+            and turns[-1].get("intent") == "data"
+            and intent not in ("data", "greeting", "meta", "unanswerable")):
         note = f" [follow-up → data, was {intent}]"
         intent = "data"
 

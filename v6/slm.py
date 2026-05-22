@@ -147,7 +147,10 @@ class DualRoleSLM:
 
     def clear_thread(self, thread_id: str) -> None:
         """Drop a thread's stored KV cache to free GPU memory."""
-        self._store.pop(thread_id, None)
+        entry = self._store.pop(thread_id, None)
+        if entry is not None:
+            entry.clear()  # release past_key_values tensor references
+        torch.cuda.empty_cache()
 
     # ── streaming generation ─────────────────────────────────────────────
     def stream_generate(self, messages: list[dict], max_new_tokens: int = 512):
