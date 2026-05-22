@@ -41,14 +41,18 @@ def _timing(state: dict, key: str, ms: float) -> dict:
     return t
 
 
-def _history_text(turns: list[dict]) -> str:
+def _history_text(turns: list[dict], limit: int = 2) -> str:
+    """Return the last `limit` turns as context for the router.
+
+    Keep it short — long history grows the KV cache and causes OOM on GPU.
+    """
     if not turns:
         return ""
     lines: list[str] = []
-    for i, t in enumerate(turns[-V6Config.MAX_TURNS:], 1):
+    for i, t in enumerate(turns[-limit:], 1):
         lines.append(f"{i}. Q: {t.get('query', '')}")
         if t.get("intent") == "data" and t.get("answer"):
-            lines.append(f"   A: {t.get('final_answer', '')[:140]}")
+            lines.append(f"   A: {t.get('answer', '')[:100]}")
     return "\n".join(lines)
 
 
