@@ -10,12 +10,11 @@ last resort, and alias-aware via **data/wilaya_aliases.json** — that file is
 the editable source of truth for variants. No alias is hard-coded in Python
 anymore: drop a new spelling into the JSON and it works on the next start.
 
-We resolve to the **canonical French spelling** (`Alger`, not `Algiers`).
-SQL filtering uses that canonical name in `WHERE dim_location.wilaya = ...`,
-which is what the database actually holds. `dim_location.location_id` is
-commune-level — there are ~25 communes per wilaya — so it cannot stand in
-for a wilaya filter; that is why the canonical name, not an id, is the
-durable handle.
+`dim_location` is commune-level (~25 communes per wilaya), so we resolve
+each mention to BOTH the canonical name AND the full list of `location_id`
+values that belong to that wilaya. SQL then filters with
+`WHERE location_id IN (id1, id2, ...)` — wilaya-level aggregation with no
+JOIN required.
 """
 
 from __future__ import annotations
@@ -59,7 +58,8 @@ class Resolver:
     """Maps free-text entity mentions onto real database values."""
 
     def __init__(self):
-        self.wilayas: list[str] = self._load_wilayas()  # canonical French names
+        self.wilaya_to_ids: dict[str, list[int]] = self._load_wilayas()
+        self.wilayas: list[str] = list(self.wilaya_to_ids.keys())
         self._known: set[str] = set(self.wilayas)
         self._index: dict[str, str] = {}             # normalized form -> canonical
         for w in self.wilayas:
@@ -71,17 +71,21 @@ class Resolver:
         self._max_words = max(
             (len(_norm(w).split()) for w in self.wilayas), default=1)
 
-    def _load_wilayas(self) -> list[str]:
+    def _load_wilayas(self) -> dict[str, list[int]]:
+        """Return {canonical wilaya name → sorted list of its location_ids}."""
+        out: dict[str, list[int]] = {}
         try:
             conn = db_connect()
             cur = conn.cursor()
-            cur.execute("SELECT DISTINCT wilaya FROM dim_location "
-                        "WHERE wilaya IS NOT NULL ORDER BY wilaya")
-            out = [r[0] for r in cur.fetchall()]
+            cur.execute("SELECT wilaya, location_id FROM dim_location "
+                        "WHERE wilaya IS NOT NULL "
+                        "ORDER BY wilaya, location_id")
+            for wilaya, loc_id in cur.fetchall():
+                out.setdefault(wilaya, []).append(int(loc_id))
             conn.close()
-            return out
         except Exception:  # noqa: BLE001 — resolver degrades to empty
-            return []
+            return {}
+        return out
 
     # ── wilaya resolution ────────────────────────────────────────────────
     def resolve_wilaya(self, name: str) -> str | None:
@@ -169,18 +173,26 @@ class Resolver:
                 return seg
         return None
 
+    def ids_for(self, wilaya: str) -> list[int]:
+        """Every commune location_id that belongs to a canonical wilaya."""
+        return list(self.wilaya_to_ids.get(wilaya, []))
+
     # ── convenience ──────────────────────────────────────────────────────
     def resolve_all(self, query: str, router_filters: dict | None,
                     max_date: str | None) -> dict:
-        """Combine router-supplied filters with a direct query scan. The
-        returned `wilayas` are the canonical French spellings that the
-        database actually stores — those are what go straight into SQL."""
+        """Combine router-supplied filters with a direct query scan.
+
+        Returns `wilayas` (canonical French spellings) and `wilaya_ids_map`
+        ({wilaya: [all its commune location_ids]}). SQL filters on the IDs;
+        the wilaya name is kept for display + diagnostics."""
         rf = router_filters or {}
         from_router = self.resolve_many(rf.get("wilayas", []))
         scanned = self.scan_query(query)
         wilayas = list(dict.fromkeys(from_router["resolved"] + scanned))
+        ids_map = {w: self.ids_for(w) for w in wilayas}
         return {
             "wilayas": wilayas,
+            "wilaya_ids_map": ids_map,
             "unresolved_wilayas": from_router["unresolved"],
             "segment": self.resolve_segment(query) or rf.get("segment"),
             "time_range": self.resolve_time(query, max_date),

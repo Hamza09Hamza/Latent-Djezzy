@@ -93,39 +93,42 @@ def _load_wilaya_aliases() -> dict:
 
 
 def _build_wilaya_chunks() -> list[dict]:
-    """One chunk per wilaya — the **canonical spelling** the database holds.
+    """One chunk per wilaya — name + aliases + the FULL list of commune
+    `location_id` values that belong to it.
 
-    `dim_location` is commune-level (each row is a commune inside a wilaya),
-    so a single `location_id` cannot represent a whole wilaya. To get
-    wilaya-level aggregates the SQL must JOIN dim_location and filter by
-    `dim_location.wilaya = '<canonical name>'`. The chunk tells the model
-    exactly which spelling to use, listing English / Arabic / historical
-    aliases so the cosine search finds the chunk no matter what the user
-    typed. The model then writes the canonical name into its SQL.
+    `dim_location` is commune-level (~25 communes per wilaya). One
+    location_id covers one commune, not a wilaya. So we pre-aggregate at
+    startup: for each wilaya, pull every commune's id, and put them in a
+    single chunk. The SLM then writes `WHERE location_id IN (...all ids...)`
+    and gets a true wilaya-level aggregate with no JOIN needed.
     """
     chunks: list[dict] = []
     aliases = _load_wilaya_aliases()
     try:
         conn = db_connect()
         cur = conn.cursor()
-        cur.execute("SELECT DISTINCT wilaya FROM dim_location "
-                    "WHERE wilaya IS NOT NULL ORDER BY wilaya")
-        rows = [r[0] for r in cur.fetchall()]
+        cur.execute("SELECT wilaya, location_id FROM dim_location "
+                    "WHERE wilaya IS NOT NULL "
+                    "ORDER BY wilaya, location_id")
+        wilaya_ids: dict[str, list[int]] = {}
+        for wilaya, loc_id in cur.fetchall():
+            wilaya_ids.setdefault(wilaya, []).append(int(loc_id))
         conn.close()
     except Exception:  # noqa: BLE001 — db unavailable degrades to empty
         return chunks
-    for wilaya in rows:
+    for wilaya, ids in wilaya_ids.items():
         alts = aliases.get(wilaya, [])
-        alt_str = (f" Common aliases: {', '.join(alts)}." if alts else "")
+        alt_str = (f" Aliases: {', '.join(alts)}." if alts else "")
+        ids_str = ", ".join(str(i) for i in ids)
         chunks.append({
             "kind": "wilaya",
             "wilaya": wilaya,
-            "text": (f"Wilaya '{wilaya}' (the exact spelling stored in "
-                     f"dim_location.wilaya).{alt_str} "
-                     f"To filter SQL by this wilaya: JOIN dim_location and "
-                     f"use `dim_location.wilaya = '{wilaya}'` — use this "
-                     f"exact French spelling, other variants silently match "
-                     f"no rows."),
+            "location_ids": ids,
+            "text": (f"Wilaya '{wilaya}' (canonical French spelling).{alt_str} "
+                     f"Covers {len(ids)} commune(s) with these "
+                     f"location_id values: {ids_str}. "
+                     f"To filter SQL for the whole wilaya, use "
+                     f"`<table>.location_id IN ({ids_str})` — no JOIN needed."),
         })
     return chunks
 

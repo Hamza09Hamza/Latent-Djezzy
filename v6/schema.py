@@ -146,16 +146,16 @@ class DBSchema:
                 "LOCATION RULE — read carefully:",
                 "  Metric tables (" + ", ".join(self.metric_tables()) + ")",
                 "  store location as `location_id` (an integer). "
-                "`dim_location` is commune-level: each row is one commune "
-                "inside a wilaya, so one location_id covers only one commune.",
-                "  To filter or aggregate by wilaya you MUST join "
-                "dim_location and use `dl.wilaya`:",
-                "    JOIN dim_location dl ON <table>.location_id = "
-                "dl.location_id",
-                "    WHERE dl.wilaya = '<canonical French name>'",
-                "  The reference knowledge gives you the exact spelling for "
-                "each wilaya — use it verbatim; English / Arabic / accent-"
-                "free variants silently match nothing.",
+                "`dim_location` is commune-level (~25 communes per wilaya), "
+                "so one location_id covers only ONE commune.",
+                "  The reference knowledge gives, for every wilaya the user "
+                "mentioned, the FULL list of its commune location_ids. "
+                "Filter on the whole list:",
+                "    WHERE <table>.location_id IN (id1, id2, id3, ...)",
+                "  No JOIN with dim_location is needed for filtering. "
+                "JOIN dim_location only when the SELECT must show the "
+                "wilaya name (e.g. comparison queries that need one row "
+                "per wilaya — then GROUP BY dl.wilaya).",
             ]
         if self.date_range:
             lines += [

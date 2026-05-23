@@ -253,9 +253,12 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
     entities = get_resolver().resolve_all(
         query, routing.get("filters", {}), max_date)
     if entities.get("wilayas"):
+        ids_map = entities.get("wilaya_ids_map", {}) or {}
+        summary = ", ".join(
+            f"{w}={len(ids_map.get(w, []))} communes"
+            for w in entities["wilayas"])
         thoughts.append({"kind": "thinking",
-                         "text": "Resolved wilayas: "
-                                 + ", ".join(entities["wilayas"]) + "."})
+                         "text": f"Resolved wilayas: {summary}."})
 
     # phase 2 — generate ⇄ validate ⇄ execute (bounded micro-retry).
     # Static issues (consistency_check) AND runtime errors from the database

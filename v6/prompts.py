@@ -91,31 +91,32 @@ _SQLGEN_BASE = """PHASE 2 - SQL GENERATION.
 You now switch from routing to SQL. Write ONE read-only SQL SELECT that
 answers the user's question.
 
-WILAYA RULE: dim_location is commune-level (~25 communes per wilaya), so a
-single `location_id` cannot represent a wilaya. To filter by a wilaya you
-MUST JOIN dim_location and filter on `dl.wilaya` using the **canonical
-French spelling** the reference knowledge above gives you — `'Alger'`,
-not `'Algiers'`; `'Béjaïa'`, not `'Bejaia'`. Any other spelling silently
-matches nothing.
+WILAYA RULE: `dim_location` is commune-level (~25 communes per wilaya).
+Each wilaya therefore covers MANY `location_id` values. The reference
+knowledge above lists, for every wilaya named by the user, the complete
+set of its commune location_ids. To filter for a whole wilaya, copy that
+full set into the WHERE clause:
 
-    -- one wilaya
+    -- one wilaya (all its communes)
+    WHERE <table>.location_id IN (<every id for that wilaya>)
+
+    -- several wilayas (concat the lists)
+    WHERE <table>.location_id IN (<every id from each wilaya>)
+
+No JOIN with dim_location is needed for filtering. JOIN dim_location only
+when the SELECT must display the wilaya name (e.g. for comparisons that
+need one row per wilaya — then `GROUP BY dl.wilaya`):
+
     SELECT dl.wilaya, SUM(g.total_revenue)
     FROM global_revenue g
     JOIN dim_location dl ON g.location_id = dl.location_id
-    WHERE dl.wilaya = 'Alger'
+    WHERE g.location_id IN (<ids for wilaya A>, <ids for wilaya B>)
     GROUP BY dl.wilaya
 
-    -- comparing several
-    WHERE dl.wilaya IN ('Alger', 'Constantine')
-    GROUP BY dl.wilaya
-
-JOIN RULE: every metric table (prepaid_kpi, postpaid_kpi, global_revenue,
-fpa_profitability, opex_capex) keys location by `location_id`. Always join
-on that integer.
-
-COMPARISON RULE: when the user compares two or more wilayas, every name
-MUST appear in the IN(...) list and the query MUST GROUP BY `dl.wilaya`
-so each one shows as its own row.
+COMPARISON RULE: when the user compares two or more wilayas, the IN list
+MUST contain every commune id from every named wilaya, and the query MUST
+JOIN dim_location and `GROUP BY dl.wilaya` so each wilaya shows on its
+own row.
 
 Rules:
 - Use ONLY tables and columns from the schema and the routing analysis above.
@@ -163,73 +164,90 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
                              schema) -> str:
     """SQL-gen instruction with one concrete, schema-correct example.
 
-    The example uses the resolved canonical wilaya names (`Alger`, not
-    `Algiers`) so any user spelling collapses to the form the database
-    actually holds. The example shape adapts to the question — trend vs
-    comparison vs plain aggregate.
+    For every wilaya the user mentioned, surface the FULL list of its
+    commune location_ids — that is the only way to get a true wilaya-level
+    aggregate from the commune-level dim_location. The example uses those
+    ids directly in a `WHERE location_id IN (...)` filter.
     """
     tables = [t for t in routing.get("tables", [])
               if schema.has_table(t) and t != "dim_location"]
     cols = [c for c in routing.get("columns", []) if c not in _STRUCTURAL]
     wilayas = (entities or {}).get("wilayas", []) or []
+    ids_map: dict = (entities or {}).get("wilaya_ids_map", {}) or {}
 
-    name_block = ""
-    if wilayas:
-        quoted = ", ".join(f"'{w}'" for w in wilayas)
-        name_block = (
-            "\n\nRESOLVED WILAYAS (use these EXACT spellings in the SQL — "
-            "they match dim_location.wilaya verbatim; any other spelling "
-            f"silently matches no rows):\n  {quoted}")
+    # Build the per-wilaya id list block — this IS the knowledge the model
+    # needs to compose the filter. Listing each wilaya's ids on its own
+    # line lets the SLM see the structure even when the lists are long.
+    id_block = ""
+    all_ids: list[int] = []
+    if wilayas and any(ids_map.get(w) for w in wilayas):
+        lines = []
+        for w in wilayas:
+            ids = ids_map.get(w, [])
+            all_ids.extend(ids)
+            lines.append(f"  {w} ({len(ids)} communes): "
+                         + ", ".join(str(i) for i in ids))
+        id_block = ("\n\nRESOLVED WILAYAS (each line lists the commune "
+                    "location_ids that make up the wilaya — copy them ALL "
+                    "into the WHERE IN clause):\n" + "\n".join(lines))
 
     if not tables:
-        return _SQLGEN_BASE + name_block
+        return _SQLGEN_BASE + id_block
 
     t = tables[0]
     alias = t[0]
     kpis = cols[:2] or schema.numeric_columns(t)[:1] or ["*"]
     agg = ", ".join(f"AVG({alias}.{c}) AS {c}" for c in kpis if c != "*")
     needs_join = schema.needs_location_join(t)
+    id_in = ", ".join(str(i) for i in all_ids) if all_ids else ""
     join = (f"JOIN dim_location dl ON {alias}.location_id = dl.location_id"
-            if needs_join else "")
-    name_in = ", ".join(f"'{w}'" for w in wilayas) if wilayas else ""
+            if needs_join and len(wilayas) > 1 else "")
 
     if is_trend_query(query):
         if len(wilayas) > 1:
-            where = f" WHERE dl.wilaya IN ({name_in})"
             example = (f"SELECT dl.wilaya, {alias}.week_start, "
                        f"{agg or alias + '.*'} "
-                       f"FROM {t} {alias} {join}{where} "
+                       f"FROM {t} {alias} {join} "
+                       f"WHERE {alias}.location_id IN ({id_in}) "
                        f"GROUP BY dl.wilaya, {alias}.week_start "
                        f"ORDER BY dl.wilaya, {alias}.week_start")
             shape = "a weekly trend by wilaya"
         else:
-            where = (f" WHERE dl.wilaya = '{wilayas[0]}'"
-                     if wilayas and join else "")
+            where = (f" WHERE {alias}.location_id IN ({id_in})"
+                     if all_ids else "")
             example = (f"SELECT {alias}.week_start, {agg or alias + '.*'} "
-                       f"FROM {t} {alias} {join}{where} "
+                       f"FROM {t} {alias}{where} "
                        f"GROUP BY {alias}.week_start "
                        f"ORDER BY {alias}.week_start")
             shape = "a weekly trend"
-    elif needs_join and wilayas:
-        where = f" WHERE dl.wilaya IN ({name_in})"
+    elif len(wilayas) > 1:
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
-                   f"FROM {t} {alias} {join}{where} GROUP BY dl.wilaya")
-        shape = ("a comparison across wilayas" if len(wilayas) > 1
-                 else "an aggregate for one wilaya")
+                   f"FROM {t} {alias} {join} "
+                   f"WHERE {alias}.location_id IN ({id_in}) "
+                   f"GROUP BY dl.wilaya")
+        shape = "a comparison across wilayas"
+    elif wilayas:
+        example = (f"SELECT {agg or alias + '.*'} "
+                   f"FROM {t} {alias} "
+                   f"WHERE {alias}.location_id IN ({id_in})")
+        shape = "an aggregate for one wilaya"
     elif needs_join:
+        # no wilaya filter, but wilaya breakdown asked for
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
-                   f"FROM {t} {alias} {join} GROUP BY dl.wilaya")
+                   f"FROM {t} {alias} "
+                   f"JOIN dim_location dl ON {alias}.location_id = "
+                   f"dl.location_id GROUP BY dl.wilaya")
         shape = "an aggregate broken down by wilaya"
     else:
         example = f"SELECT {agg or '*'} FROM {t} {alias}"
         shape = "an aggregate"
 
     return (_SQLGEN_BASE
-            + name_block
+            + id_block
             + f"\n\nThis question needs {shape}. A correct query shape is:\n"
             + f"  {example}\n"
-            + "Adapt it to the user's exact question. Use the canonical "
-            + "wilaya spellings listed above whenever you filter.")
+            + "Adapt it to the user's exact question. Filter by the full "
+            + "location_id list from the resolved wilayas above.")
 
 
 def parse_router_output(text: str) -> dict:
