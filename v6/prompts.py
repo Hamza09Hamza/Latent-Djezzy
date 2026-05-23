@@ -91,33 +91,38 @@ _SQLGEN_BASE = """PHASE 2 - SQL GENERATION.
 You now switch from routing to SQL. Write ONE read-only SQL SELECT that
 answers the user's question.
 
-WILAYA RULE: never filter by wilaya name. The reference knowledge above
-lists each wilaya with its `location_id` (an integer). When the user names
-a wilaya, find its location_id in the reference knowledge and filter by
-the id directly:
-    WHERE <table>.location_id = <id>            -- one wilaya
-    WHERE <table>.location_id IN (<id1>,<id2>)  -- comparing several
-Names are unreliable (`Algiers` vs `Alger`, accents, Arabic). IDs are not.
+WILAYA RULE: dim_location is commune-level (~25 communes per wilaya), so a
+single `location_id` cannot represent a wilaya. To filter by a wilaya you
+MUST JOIN dim_location and filter on `dl.wilaya` using the **canonical
+French spelling** the reference knowledge above gives you — `'Alger'`,
+not `'Algiers'`; `'Béjaïa'`, not `'Bejaia'`. Any other spelling silently
+matches nothing.
 
-JOIN RULE: every metric table (prepaid_kpi, postpaid_kpi, global_revenue,
-fpa_profitability, opex_capex) keys location by `location_id`. JOIN
-dim_location ONLY when the result must display the wilaya name in the
-SELECT — never to filter:
-    SELECT dl.wilaya, SUM(g.total_revenue) FROM global_revenue g
+    -- one wilaya
+    SELECT dl.wilaya, SUM(g.total_revenue)
+    FROM global_revenue g
     JOIN dim_location dl ON g.location_id = dl.location_id
-    WHERE g.location_id IN (16, 25)
+    WHERE dl.wilaya = 'Alger'
     GROUP BY dl.wilaya
 
-COMPARISON RULE: when the user compares two or more wilayas, every id MUST
-appear in the IN(...) list and the query MUST GROUP BY a column that lets
-each one show as its own row (`location_id` or `dl.wilaya`).
+    -- comparing several
+    WHERE dl.wilaya IN ('Alger', 'Constantine')
+    GROUP BY dl.wilaya
+
+JOIN RULE: every metric table (prepaid_kpi, postpaid_kpi, global_revenue,
+fpa_profitability, opex_capex) keys location by `location_id`. Always join
+on that integer.
+
+COMPARISON RULE: when the user compares two or more wilayas, every name
+MUST appear in the IN(...) list and the query MUST GROUP BY `dl.wilaya`
+so each one shows as its own row.
 
 Rules:
 - Use ONLY tables and columns from the schema and the routing analysis above.
 - Apply ONLY the filters the user actually asked for. Do not invent wilaya,
   date, or segment filters; do not narrow a "by wilaya" query to a handful.
 - For a "trend" or "over time" question, GROUP BY week_start and ORDER BY
-  week_start; only add location_id to the GROUP BY when the user compares
+  week_start; only add dl.wilaya to the GROUP BY when the user compares
   wilayas as well.
 - Put literal values directly in the WHERE clause; no placeholders.
 - Output ONLY the SQL statement: no JSON, no markdown, no comment.
@@ -158,25 +163,26 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
                              schema) -> str:
     """SQL-gen instruction with one concrete, schema-correct example.
 
-    The example uses the resolved location_ids — never the wilaya name
-    string — and adapts its shape to the question (trend vs comparison vs
-    plain aggregate). The model is shown one good query for this exact
-    table + ids combination and asked to adapt it.
+    The example uses the resolved canonical wilaya names (`Alger`, not
+    `Algiers`) so any user spelling collapses to the form the database
+    actually holds. The example shape adapts to the question — trend vs
+    comparison vs plain aggregate.
     """
     tables = [t for t in routing.get("tables", [])
               if schema.has_table(t) and t != "dim_location"]
     cols = [c for c in routing.get("columns", []) if c not in _STRUCTURAL]
-    wilayas = (entities or {}).get("wilayas", [])
-    wid_list = (entities or {}).get("wilaya_ids", []) or []
+    wilayas = (entities or {}).get("wilayas", []) or []
 
-    id_block = ""
-    if wilayas and wid_list:
-        pairs = [f"{w} = {i}" for w, i in zip(wilayas, wid_list)]
-        id_block = ("\n\nRESOLVED WILAYA IDS (use these integers in the SQL, "
-                    "not the names):\n  " + ", ".join(pairs))
+    name_block = ""
+    if wilayas:
+        quoted = ", ".join(f"'{w}'" for w in wilayas)
+        name_block = (
+            "\n\nRESOLVED WILAYAS (use these EXACT spellings in the SQL — "
+            "they match dim_location.wilaya verbatim; any other spelling "
+            f"silently matches no rows):\n  {quoted}")
 
     if not tables:
-        return _SQLGEN_BASE + id_block
+        return _SQLGEN_BASE + name_block
 
     t = tables[0]
     alias = t[0]
@@ -185,11 +191,11 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
     needs_join = schema.needs_location_join(t)
     join = (f"JOIN dim_location dl ON {alias}.location_id = dl.location_id"
             if needs_join else "")
-    id_in = ", ".join(str(i) for i in wid_list) if wid_list else ""
+    name_in = ", ".join(f"'{w}'" for w in wilayas) if wilayas else ""
 
     if is_trend_query(query):
-        if len(wid_list) > 1:
-            where = f" WHERE {alias}.location_id IN ({id_in})"
+        if len(wilayas) > 1:
+            where = f" WHERE dl.wilaya IN ({name_in})"
             example = (f"SELECT dl.wilaya, {alias}.week_start, "
                        f"{agg or alias + '.*'} "
                        f"FROM {t} {alias} {join}{where} "
@@ -197,18 +203,18 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
                        f"ORDER BY dl.wilaya, {alias}.week_start")
             shape = "a weekly trend by wilaya"
         else:
-            where = (f" WHERE {alias}.location_id = {wid_list[0]}"
-                     if wid_list else "")
+            where = (f" WHERE dl.wilaya = '{wilayas[0]}'"
+                     if wilayas and join else "")
             example = (f"SELECT {alias}.week_start, {agg or alias + '.*'} "
-                       f"FROM {t} {alias}{where} "
+                       f"FROM {t} {alias} {join}{where} "
                        f"GROUP BY {alias}.week_start "
                        f"ORDER BY {alias}.week_start")
             shape = "a weekly trend"
-    elif needs_join and wid_list:
-        where = f" WHERE {alias}.location_id IN ({id_in})"
+    elif needs_join and wilayas:
+        where = f" WHERE dl.wilaya IN ({name_in})"
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
                    f"FROM {t} {alias} {join}{where} GROUP BY dl.wilaya")
-        shape = ("a comparison across wilayas" if len(wid_list) > 1
+        shape = ("a comparison across wilayas" if len(wilayas) > 1
                  else "an aggregate for one wilaya")
     elif needs_join:
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
@@ -219,11 +225,11 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
         shape = "an aggregate"
 
     return (_SQLGEN_BASE
-            + id_block
+            + name_block
             + f"\n\nThis question needs {shape}. A correct query shape is:\n"
             + f"  {example}\n"
-            + "Adapt it to the user's exact question. Keep the WILAYA RULE "
-            + "(filter by location_id integers, not by wilaya name string).")
+            + "Adapt it to the user's exact question. Use the canonical "
+            + "wilaya spellings listed above whenever you filter.")
 
 
 def parse_router_output(text: str) -> dict:

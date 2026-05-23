@@ -10,9 +10,12 @@ last resort, and alias-aware via **data/wilaya_aliases.json** — that file is
 the editable source of truth for variants. No alias is hard-coded in Python
 anymore: drop a new spelling into the JSON and it works on the next start.
 
-We resolve to BOTH the canonical name and the `location_id`. SQL filtering
-uses the id (`WHERE location_id IN (16, 25)`) because integers can't be
-misspelled; display can still JOIN dim_location for the human-readable name.
+We resolve to the **canonical French spelling** (`Alger`, not `Algiers`).
+SQL filtering uses that canonical name in `WHERE dim_location.wilaya = ...`,
+which is what the database actually holds. `dim_location.location_id` is
+commune-level — there are ~25 communes per wilaya — so it cannot stand in
+for a wilaya filter; that is why the canonical name, not an id, is the
+durable handle.
 """
 
 from __future__ import annotations
@@ -56,26 +59,25 @@ class Resolver:
     """Maps free-text entity mentions onto real database values."""
 
     def __init__(self):
-        rows = self._load_wilayas()                  # [(location_id, wilaya)]
-        self.wilayas: list[str] = [w for _, w in rows]
-        self.wilaya_to_id: dict[str, int] = {w: int(i) for i, w in rows}
+        self.wilayas: list[str] = self._load_wilayas()  # canonical French names
+        self._known: set[str] = set(self.wilayas)
         self._index: dict[str, str] = {}             # normalized form -> canonical
         for w in self.wilayas:
             self._index[_norm(w)] = w
         for canon, aliases in _load_aliases().items():
-            if canon in self.wilaya_to_id:
+            if canon in self._known:
                 for alias in aliases:
                     self._index[_norm(alias)] = canon
         self._max_words = max(
             (len(_norm(w).split()) for w in self.wilayas), default=1)
 
-    def _load_wilayas(self) -> list[tuple[int, str]]:
+    def _load_wilayas(self) -> list[str]:
         try:
             conn = db_connect()
             cur = conn.cursor()
-            cur.execute("SELECT location_id, wilaya FROM dim_location "
+            cur.execute("SELECT DISTINCT wilaya FROM dim_location "
                         "WHERE wilaya IS NOT NULL ORDER BY wilaya")
-            out = [(r[0], r[1]) for r in cur.fetchall()]
+            out = [r[0] for r in cur.fetchall()]
             conn.close()
             return out
         except Exception:  # noqa: BLE001 — resolver degrades to empty
@@ -92,25 +94,16 @@ class Resolver:
         near = get_close_matches(key, list(self._index), n=1, cutoff=0.86)
         return self._index[near[0]] if near else None
 
-    def wilaya_id(self, name: str) -> int | None:
-        """One mention → its location_id, or None if unknown."""
-        canon = self.resolve_wilaya(name)
-        return self.wilaya_to_id.get(canon) if canon else None
-
     def resolve_many(self, names: list) -> dict:
         resolved: list[str] = []
-        ids: list[int] = []
         unresolved: list[str] = []
         for n in names or []:
             hit = self.resolve_wilaya(str(n))
             if hit and hit not in resolved:
                 resolved.append(hit)
-                wid = self.wilaya_to_id.get(hit)
-                if wid is not None:
-                    ids.append(wid)
             elif not hit:
                 unresolved.append(str(n))
-        return {"resolved": resolved, "ids": ids, "unresolved": unresolved}
+        return {"resolved": resolved, "unresolved": unresolved}
 
     def scan_query(self, query: str) -> list[str]:
         """Find wilaya names directly in free text — backs up the router.
@@ -179,15 +172,15 @@ class Resolver:
     # ── convenience ──────────────────────────────────────────────────────
     def resolve_all(self, query: str, router_filters: dict | None,
                     max_date: str | None) -> dict:
-        """Combine router-supplied filters with a direct query scan."""
+        """Combine router-supplied filters with a direct query scan. The
+        returned `wilayas` are the canonical French spellings that the
+        database actually stores — those are what go straight into SQL."""
         rf = router_filters or {}
         from_router = self.resolve_many(rf.get("wilayas", []))
         scanned = self.scan_query(query)
         wilayas = list(dict.fromkeys(from_router["resolved"] + scanned))
-        ids = [self.wilaya_to_id[w] for w in wilayas if w in self.wilaya_to_id]
         return {
             "wilayas": wilayas,
-            "wilaya_ids": ids,
             "unresolved_wilayas": from_router["unresolved"],
             "segment": self.resolve_segment(query) or rf.get("segment"),
             "time_range": self.resolve_time(query, max_date),

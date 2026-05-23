@@ -93,33 +93,39 @@ def _load_wilaya_aliases() -> dict:
 
 
 def _build_wilaya_chunks() -> list[dict]:
-    """One chunk per wilaya: 'Wilaya Alger (location_id=16). Also called: ...'
+    """One chunk per wilaya — the **canonical spelling** the database holds.
 
-    The SLM is told to write `WHERE location_id = N` using the integer it sees
-    in this chunk. That removes the whole name-spelling fragility ('Algiers'
-    vs 'Alger') from the SQL path.
+    `dim_location` is commune-level (each row is a commune inside a wilaya),
+    so a single `location_id` cannot represent a whole wilaya. To get
+    wilaya-level aggregates the SQL must JOIN dim_location and filter by
+    `dim_location.wilaya = '<canonical name>'`. The chunk tells the model
+    exactly which spelling to use, listing English / Arabic / historical
+    aliases so the cosine search finds the chunk no matter what the user
+    typed. The model then writes the canonical name into its SQL.
     """
     chunks: list[dict] = []
     aliases = _load_wilaya_aliases()
     try:
         conn = db_connect()
         cur = conn.cursor()
-        cur.execute("SELECT location_id, wilaya FROM dim_location "
-                    "WHERE wilaya IS NOT NULL ORDER BY location_id")
-        rows = cur.fetchall()
+        cur.execute("SELECT DISTINCT wilaya FROM dim_location "
+                    "WHERE wilaya IS NOT NULL ORDER BY wilaya")
+        rows = [r[0] for r in cur.fetchall()]
         conn.close()
     except Exception:  # noqa: BLE001 — db unavailable degrades to empty
         return chunks
-    for loc_id, wilaya in rows:
+    for wilaya in rows:
         alts = aliases.get(wilaya, [])
-        alt_str = (f" Also known as: {', '.join(alts)}." if alts else "")
+        alt_str = (f" Common aliases: {', '.join(alts)}." if alts else "")
         chunks.append({
             "kind": "wilaya",
             "wilaya": wilaya,
-            "location_id": int(loc_id),
-            "text": (f"Wilaya '{wilaya}' has location_id={int(loc_id)}.{alt_str} "
-                     f"To filter SQL by this wilaya use "
-                     f"`location_id = {int(loc_id)}` — not the wilaya name."),
+            "text": (f"Wilaya '{wilaya}' (the exact spelling stored in "
+                     f"dim_location.wilaya).{alt_str} "
+                     f"To filter SQL by this wilaya: JOIN dim_location and "
+                     f"use `dim_location.wilaya = '{wilaya}'` — use this "
+                     f"exact French spelling, other variants silently match "
+                     f"no rows."),
         })
     return chunks
 

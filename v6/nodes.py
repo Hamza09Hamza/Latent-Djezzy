@@ -248,51 +248,59 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
                              "OPEX/CAPEX — and optionally a wilaya and period?"),
         }, thoughts)
 
-    # resolve entities (deterministic): names → canonical + location_ids
+    # resolve entities (deterministic): names → canonical French spellings
     max_date = schema.date_range[1] if schema.date_range else None
     entities = get_resolver().resolve_all(
         query, routing.get("filters", {}), max_date)
     if entities.get("wilayas"):
-        id_map = ", ".join(f"{w}→{i}" for w, i in
-                           zip(entities["wilayas"],
-                               entities.get("wilaya_ids", [])))
         thoughts.append({"kind": "thinking",
-                         "text": f"Resolved wilayas: {id_map}."})
+                         "text": "Resolved wilayas: "
+                                 + ", ".join(entities["wilayas"]) + "."})
 
-    # phase 2 — generate ⇄ validate (bounded micro-retry)
+    # phase 2 — generate ⇄ validate ⇄ execute (bounded micro-retry).
+    # Static issues (consistency_check) AND runtime errors from the database
+    # both feed the same correction loop — the SLM gets to see what really
+    # went wrong, not a generic phrase.
     sql, sql_valid, sql_issues = "", False, []
+    exec_error: str | None = None
+    rows, columns, exec_ok, err = [], [], False, None
     for attempt in range(1, V6Config.SQL_MAX_RETRIES + 2):
         instr = build_sqlgen_instruction(query, routing, entities, schema)
-        if attempt > 1 and sql_issues:
-            hint = correction_hint(sql_issues, entities)
+        if attempt > 1 and (sql_issues or exec_error):
+            hint = correction_hint(sql_issues, entities,
+                                   exec_error=exec_error)
             if hint:
+                preview = (exec_error or "; ".join(sql_issues[:2]))[:120]
                 thoughts.append({"kind": "thinking",
-                                 "text": (f"Retrying SQL — last attempt had "
-                                          f"issues: {'; '.join(sql_issues[:2])}.")})
+                                 "text": f"Retrying SQL — last attempt: "
+                                         f"{preview}."})
                 instr += ("\n\nCORRECTION — your previous attempt was wrong. "
                           + hint)
         res = get_slm().run_sqlgen(thread, instr)
         v = validate_sql(clean_sql(res.get("sql_output", "")), schema)
         sql, sql_valid = v["sql"], v["valid"]
-        sql_issues = list(v["errors"]) + consistency_check(sql, entities, query,
-                                                           schema=schema)
-        if sql_valid and not sql_issues:
+        sql_issues = list(v["errors"]) + consistency_check(
+            sql, entities, query, schema=schema)
+        exec_error = None
+        if not (sql_valid and not sql_issues):
+            continue
+        # passed static checks → try executing
+        final_sql = enforce_limit(sql)
+        ex = execute_sql(final_sql)
+        sql = final_sql
+        if ex["ok"]:
+            rows, columns, exec_ok, err = (ex["rows"], ex["columns"],
+                                           True, None)
             break
+        exec_error = ex["error"]
+        err = ex["error"]
     thoughts.append({"kind": "thinking",
                      "text": (f"Built the query: {sql}" if sql
                               else "I couldn't form a valid query.")})
-
-    # execute
-    rows, columns, exec_ok, err = [], [], False, None
-    if sql_valid and sql:
-        final_sql = enforce_limit(sql)
-        ex = execute_sql(final_sql)
-        rows, columns, exec_ok, err = (ex["rows"], ex["columns"],
-                                       ex["ok"], ex["error"])
-        sql = final_sql
     thoughts.append({"kind": "thinking",
                      "text": (f"Ran it — {len(rows)} row(s) back." if exec_ok
-                              else "The query did not run cleanly.")})
+                              else f"The query did not run cleanly"
+                              + (f" ({err})." if err else "."))})
 
     # compose the data answer
     if not sql:
