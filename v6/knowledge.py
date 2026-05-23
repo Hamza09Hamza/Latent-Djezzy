@@ -225,11 +225,21 @@ class Retriever:
         return hits
 
     def knowledge_block(self, query: str, k: int | None = None) -> tuple[str, float]:
-        """Return (formatted knowledge text, top cosine score)."""
+        """Return (formatted knowledge text, KPI-grounding score).
+
+        Grounding = max cosine among non-wilaya chunks (kpi, column,
+        definition, context, relationship). A wilaya chunk tells us the
+        user mentioned a location — it does NOT confirm the database
+        can answer the metric. Using it as the grounding signal would
+        make unanswerable queries like "satellite coverage for Oran"
+        appear well-grounded just because Oran is in the knowledge base.
+        """
         hits = self.retrieve(query, k)
         if not hits:
             return "(no reference knowledge available)", 0.0
-        return "\n".join(f"- {h['text']}" for h in hits), hits[0]["score"]
+        kpi_scores = [h["score"] for h in hits if h.get("kind") != "wilaya"]
+        grounding = max(kpi_scores) if kpi_scores else 0.0
+        return "\n".join(f"- {h['text']}" for h in hits), grounding
 
     def definition_for(self, query: str) -> str | None:
         """Best definition/KPI chunk for a 'what does X mean' question."""

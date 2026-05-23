@@ -121,10 +121,20 @@ row. Example shape:
     )
     GROUP BY dl.wilaya
 
+AGGREGATION RULE: choose the right function for the question:
+  - "total", "sum", or any amount/count column (revenue, cost, subscribers,
+    capex, opex, ebitda, profit) → SUM(...)
+  - "average", "mean", "rate", "ratio", "score", "arpu" → AVG(...)
+  - "count", "how many" → COUNT(*)
+When unsure, prefer SUM for revenue or cost columns.
+
 Rules:
-- Use ONLY tables and columns from the schema and the routing analysis above.
+- USE THE EXACT TABLE(S) listed in the routing analysis JSON above.
+  Do NOT substitute a different table even if you think another fits.
+- Use ONLY columns from those tables and the schema shown above.
 - Apply ONLY the filters the user actually asked for. Do not invent wilaya,
-  date, or segment filters.
+  date, or segment filters. If the user asks for "all wilayas", do NOT add a
+  wilaya filter — instead JOIN dim_location and GROUP BY dl.wilaya.
 - For a "trend" or "over time" question, GROUP BY week_start and ORDER BY
   week_start; only add dl.wilaya to the GROUP BY when the user compares
   wilayas as well.
@@ -151,20 +161,28 @@ def build_router_messages(query: str, schema_prompt: str, knowledge: str,
     ]
 
 
+def _agg_fn(col: str) -> str:
+    """SUM for amount/count columns; AVG for rates, ratios, scores."""
+    c = col.lower()
+    if any(k in c for k in ("rate", "ratio", "score", "arpu", "average",
+                             "avg", "index", "percentage", "pct")):
+        return "AVG"
+    return "SUM"
+
+
 def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
                              schema) -> str:
     """SQL-gen instruction with one concrete, schema-correct example.
 
-    Surfaces the canonical French spelling for every wilaya the user named.
-    The SLM writes a compact subquery instead of a hand-written id list, so
-    the SQL stays short regardless of how many communes a wilaya has.
+    Includes an explicit table mandate (model must use the routed table, not
+    substitute another) and canonical wilaya spellings for the subquery.
     """
     del query  # the SLM sees the user query separately and judges shape
     tables = [t for t in routing.get("tables", [])
               if schema.has_table(t) and t != "dim_location"]
     wilayas = (entities or {}).get("wilayas", []) or []
 
-    # Canonical name block — just the names, no id lists
+    # Canonical name block — names only, no id lists
     names_block = ""
     if wilayas:
         canon_list = ", ".join(f"'{w}'" for w in wilayas)
@@ -177,12 +195,17 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
 
     t = tables[0]
     alias = t[0]
-    # Pick a KPI for the example: prefer a routing-supplied numeric column,
+    # Explicit table mandate: the model must use this table, not substitute
+    table_mandate = (f"\n\nMANDATORY TABLE: you MUST query `{t}`. "
+                     f"Do NOT use any other table for this query.")
+
+    # Pick a KPI for the example: prefer routing-supplied numeric columns,
     # fall back to any numeric column in the table.
     numeric_cols = set(schema.numeric_columns(t))
     routing_kpis = [c for c in routing.get("columns", []) if c in numeric_cols]
     kpis = routing_kpis[:2] or list(numeric_cols)[:1] or ["*"]
-    agg = ", ".join(f"AVG({alias}.{c}) AS {c}" for c in kpis if c != "*")
+    agg = ", ".join(f"{_agg_fn(c)}({alias}.{c}) AS {c}"
+                    for c in kpis if c != "*")
     needs_join = schema.needs_location_join(t)
 
     if len(wilayas) > 1:
@@ -214,6 +237,7 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
 
     return (_SQLGEN_BASE
             + names_block
+            + table_mandate
             + f"\n\nThis question fits {shape}. One valid shape is:\n"
             + f"  {example}\n"
             + "Adapt it to the user's exact question — decide whether to "

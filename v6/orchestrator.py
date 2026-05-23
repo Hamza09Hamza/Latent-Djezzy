@@ -98,11 +98,19 @@ def assemble(query: str, routing: dict, capabilities: list[str],
     routing_v["tables"] = valid_tables
     routing_v["columns"] = valid_cols
 
-    # confidence — does the evidence support a data query?
+    # confidence — does the KPI evidence support a data query?
+    # `grounding` is now the max cosine among non-wilaya chunks (see
+    # knowledge_block). A router-hallucinated table with only a location
+    # hit (grounding near 0) must not be treated as answerable.
     metric_tables = [t for t in valid_tables if t != "dim_location"]
+    _floor = V6Config.RAG_LOW_CONF * 0.7   # 0.315 at default threshold
     if metric_tables and grounding >= V6Config.RAG_LOW_CONF:
         confidence = "high"
-    elif metric_tables or grounding >= V6Config.RAG_LOW_CONF or inherited:
+    elif grounding >= V6Config.RAG_LOW_CONF or inherited:
+        confidence = "medium"
+    elif metric_tables and grounding >= _floor:
+        # Router found a table but KPI grounding is weak — let it try,
+        # but don't mark it high so the brain can bail after one attempt.
         confidence = "medium"
     else:
         confidence = "low"

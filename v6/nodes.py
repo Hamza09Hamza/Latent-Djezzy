@@ -180,6 +180,12 @@ def brain_node(state: dict) -> dict:
 
 def route_after_brain(state: dict) -> str:
     """The seuil: keep looping, or hand off to the communicator."""
+    # Non-data intents never need an action — the communicator handles them
+    # directly. Guard here so a misfiring action head can't send a greeting
+    # or unanswerable query into the SQL pipeline.
+    intent = state.get("intent", "")
+    if intent in ("greeting", "meta", "definition", "unanswerable"):
+        return "communicator"
     if state.get("brain_step", 0) >= V6Config.BRAIN_MAX_STEPS:
         return "communicator"
     if state.get("continue_score", 0.0) < V6Config.BRAIN_SEUIL:
@@ -229,6 +235,17 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
         history, feedback=state.get("feedback", ""))
     rr = get_slm().run_router(messages, thread_id=thread)
     routing = parse_router_output(rr["router_output"])
+
+    # If the router itself classifies the query as non-data, respect it —
+    # the communicator will give the right answer for that intent.
+    if routing.get("intent") in ("unanswerable", "greeting", "meta", "definition"):
+        return ({
+            "router_raw": rr["router_output"], "routing": routing,
+            "entities": {}, "sql": "", "sql_valid": False, "sql_issues": [],
+            "exec_ok": False, "rows": [], "columns": [], "feedback": "",
+            "final_answer": "",  # communicator fills this from intent
+        }, thoughts)
+
     decision = assemble(query, routing, [], False,
                         state.get("grounding", 0.0),
                         state.get("turns", []), schema)

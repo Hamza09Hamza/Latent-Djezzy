@@ -141,6 +141,13 @@ def consistency_check(sql: str, entities: dict, query: str = "",
             f"use a subquery instead: WHERE <table>.location_id IN "
             f"(SELECT location_id FROM dim_location WHERE wilaya IN ({canon}))")
 
+    # 2b. hallucinated wilaya filter — model added a location_id/wilaya subquery
+    #     when the user named no wilaya at all
+    if not requested_names and (_SUBQUERY_LOC_RE.search(s) or _INLINE_LOC_ID_RE.search(s)):
+        issues.append(
+            "query filters by wilaya/location_id but the user named no specific "
+            "wilaya; remove the filter and use GROUP BY dl.wilaya to show all wilayas")
+
     # 3. non-canonical wilaya name — extract names the SQL uses in wilaya filters
     if requested_names:
         canonical_set = set(requested_names)
@@ -185,6 +192,11 @@ def correction_hint(issues: list[str], entities: dict,
             f"Do NOT list location_ids by hand. Use this subquery pattern: "
             f"WHERE <table>.location_id IN "
             f"(SELECT location_id FROM dim_location WHERE wilaya IN ({canon})).")
+    if any("named no specific wilaya" in i for i in issues):
+        parts.append(
+            "The user named NO specific wilaya. Remove the location_id/wilaya "
+            "filter completely. Instead JOIN dim_location and GROUP BY dl.wilaya "
+            "to return one row per wilaya.")
     if any("canonical DB spelling" in i for i in issues):
         canon = ", ".join(f"'{w}'" for w in wilayas)
         parts.append(
