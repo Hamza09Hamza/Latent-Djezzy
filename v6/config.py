@@ -27,8 +27,9 @@ class V6Config:
     TEMPLATE_DIR = os.path.join(_HERE, "templates")
     MODELS_DIR   = os.path.join(_REPO_ROOT, "models")
 
-    GLOSSARY_PATH    = os.path.join(DATA_DIR, "glossary.json")
-    KPI_CATALOG_PATH = os.path.join(DATA_DIR, "kpi_catalog.json")
+    GLOSSARY_PATH        = os.path.join(DATA_DIR, "glossary.json")
+    KPI_CATALOG_PATH     = os.path.join(DATA_DIR, "kpi_catalog.json")
+    WILAYA_ALIASES_PATH  = os.path.join(DATA_DIR, "wilaya_aliases.json")
 
     # Charts and rendered reports land here (created on demand).
     # Kept as class attr for CLI banner; use output_dir() for actual paths.

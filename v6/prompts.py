@@ -91,27 +91,34 @@ _SQLGEN_BASE = """PHASE 2 - SQL GENERATION.
 You now switch from routing to SQL. Write ONE read-only SQL SELECT that
 answers the user's question.
 
-JOIN RULE: every metric table (prepaid_kpi, postpaid_kpi, global_revenue,
-fpa_profitability, opex_capex) keys location by `location_id`. To filter or
-group by a wilaya you MUST join dim_location:
-    JOIN dim_location dl ON <table>.location_id = dl.location_id
-and then use dl.wilaya. No metric table has a `wilaya` column of its own.
+WILAYA RULE: never filter by wilaya name. The reference knowledge above
+lists each wilaya with its `location_id` (an integer). When the user names
+a wilaya, find its location_id in the reference knowledge and filter by
+the id directly:
+    WHERE <table>.location_id = <id>            -- one wilaya
+    WHERE <table>.location_id IN (<id1>,<id2>)  -- comparing several
+Names are unreliable (`Algiers` vs `Alger`, accents, Arabic). IDs are not.
 
-COMPARISON RULE: If the user asks to compare or contrast multiple entities
-(e.g., "between A and B", "compare A and B", "A vs B"), your query MUST
-return a separate row for EACH entity. Use:
-  - WHERE dl.wilaya IN ('A', 'B') and GROUP BY dl.wilaya, or
-  - UNION queries if the entities are in different tables.
-Do NOT filter by only one wilaya when two or more are mentioned.
+JOIN RULE: every metric table (prepaid_kpi, postpaid_kpi, global_revenue,
+fpa_profitability, opex_capex) keys location by `location_id`. JOIN
+dim_location ONLY when the result must display the wilaya name in the
+SELECT — never to filter:
+    SELECT dl.wilaya, SUM(g.total_revenue) FROM global_revenue g
+    JOIN dim_location dl ON g.location_id = dl.location_id
+    WHERE g.location_id IN (16, 25)
+    GROUP BY dl.wilaya
+
+COMPARISON RULE: when the user compares two or more wilayas, every id MUST
+appear in the IN(...) list and the query MUST GROUP BY a column that lets
+each one show as its own row (`location_id` or `dl.wilaya`).
 
 Rules:
 - Use ONLY tables and columns from the schema and the routing analysis above.
-- Apply ONLY the filters from the routing object. Do NOT add a wilaya, date
-  or segment the user did not ask for.
+- Apply ONLY the filters the user actually asked for. Do not invent wilaya,
+  date, or segment filters; do not narrow a "by wilaya" query to a handful.
 - For a "trend" or "over time" question, GROUP BY week_start and ORDER BY
-  week_start; do not group by wilaya unless the user compares wilayas.
-- For multi-entity comparisons, GROUP BY the entity (wilaya/segment) to show
-  all requested entities in the result.
+  week_start; only add location_id to the GROUP BY when the user compares
+  wilayas as well.
 - Put literal values directly in the WHERE clause; no placeholders.
 - Output ONLY the SQL statement: no JSON, no markdown, no comment.
 - Start the output with SELECT or WITH."""
@@ -151,58 +158,72 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
                              schema) -> str:
     """SQL-gen instruction with one concrete, schema-correct example.
 
-    The example is built from the *resolved* entities, so it never injects a
-    wilaya the user did not ask for, and it matches the query shape (trend
-    vs comparison) so the model does not group by wilaya for a time series.
+    The example uses the resolved location_ids — never the wilaya name
+    string — and adapts its shape to the question (trend vs comparison vs
+    plain aggregate). The model is shown one good query for this exact
+    table + ids combination and asked to adapt it.
     """
     tables = [t for t in routing.get("tables", [])
               if schema.has_table(t) and t != "dim_location"]
     cols = [c for c in routing.get("columns", []) if c not in _STRUCTURAL]
     wilayas = (entities or {}).get("wilayas", [])
+    wid_list = (entities or {}).get("wilaya_ids", []) or []
+
+    id_block = ""
+    if wilayas and wid_list:
+        pairs = [f"{w} = {i}" for w, i in zip(wilayas, wid_list)]
+        id_block = ("\n\nRESOLVED WILAYA IDS (use these integers in the SQL, "
+                    "not the names):\n  " + ", ".join(pairs))
 
     if not tables:
-        return _SQLGEN_BASE
+        return _SQLGEN_BASE + id_block
 
     t = tables[0]
     alias = t[0]
     kpis = cols[:2] or schema.numeric_columns(t)[:1] or ["*"]
     agg = ", ".join(f"AVG({alias}.{c}) AS {c}" for c in kpis if c != "*")
+    needs_join = schema.needs_location_join(t)
     join = (f"JOIN dim_location dl ON {alias}.location_id = dl.location_id"
-            if schema.needs_location_join(t) else "")
+            if needs_join else "")
+    id_in = ", ".join(str(i) for i in wid_list) if wid_list else ""
 
     if is_trend_query(query):
-        where = (f" WHERE dl.wilaya = '{wilayas[0]}'"
-                 if wilayas and join else "")
-        example = (f"SELECT {alias}.week_start, {agg or alias + '.*'} "
-                   f"FROM {t} {alias} {join}{where} "
-                   f"GROUP BY {alias}.week_start ORDER BY {alias}.week_start")
-        shape = "a weekly trend"
-        if len(wilayas) > 1:
-            where_multi = (f" WHERE dl.wilaya IN ("
-                          + ", ".join(f"'{w}'" for w in wilayas) + ")")
+        if len(wid_list) > 1:
+            where = f" WHERE {alias}.location_id IN ({id_in})"
             example = (f"SELECT dl.wilaya, {alias}.week_start, "
-                      f"{agg or alias + '.*'} "
-                      f"FROM {t} {alias} {join}{where_multi} "
-                      f"GROUP BY dl.wilaya, {alias}.week_start "
-                      f"ORDER BY dl.wilaya, {alias}.week_start")
+                       f"{agg or alias + '.*'} "
+                       f"FROM {t} {alias} {join}{where} "
+                       f"GROUP BY dl.wilaya, {alias}.week_start "
+                       f"ORDER BY dl.wilaya, {alias}.week_start")
             shape = "a weekly trend by wilaya"
-    elif join:
-        where = (" WHERE dl.wilaya IN ("
-                 + ", ".join(f"'{w}'" for w in wilayas) + ")"
-                 if wilayas else "")
+        else:
+            where = (f" WHERE {alias}.location_id = {wid_list[0]}"
+                     if wid_list else "")
+            example = (f"SELECT {alias}.week_start, {agg or alias + '.*'} "
+                       f"FROM {t} {alias}{where} "
+                       f"GROUP BY {alias}.week_start "
+                       f"ORDER BY {alias}.week_start")
+            shape = "a weekly trend"
+    elif needs_join and wid_list:
+        where = f" WHERE {alias}.location_id IN ({id_in})"
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
                    f"FROM {t} {alias} {join}{where} GROUP BY dl.wilaya")
-        shape = ("a comparison across wilayas" if len(wilayas) > 1
-                else "an aggregate by wilaya")
+        shape = ("a comparison across wilayas" if len(wid_list) > 1
+                 else "an aggregate for one wilaya")
+    elif needs_join:
+        example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
+                   f"FROM {t} {alias} {join} GROUP BY dl.wilaya")
+        shape = "an aggregate broken down by wilaya"
     else:
         example = f"SELECT {agg or '*'} FROM {t} {alias}"
         shape = "an aggregate"
 
     return (_SQLGEN_BASE
+            + id_block
             + f"\n\nThis question needs {shape}. A correct query shape is:\n"
             + f"  {example}\n"
-            + "Adapt it to the user's exact question. Keep the join rule and "
-            + "add only the filters listed in the routing object.")
+            + "Adapt it to the user's exact question. Keep the WILAYA RULE "
+            + "(filter by location_id integers, not by wilaya name string).")
 
 
 def parse_router_output(text: str) -> dict:

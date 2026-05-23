@@ -67,61 +67,101 @@ def validate_sql(sql: str, schema=None) -> dict:
     return {"valid": not errors, "errors": errors, "sql": s}
 
 
-# ── intent-consistency check (the hallacinated-filter guard) ─────────────
-def consistency_check(sql: str, entities: dict, query: str = "", schema=None) -> list[str]:
-    """Flag filters in the SQL that disagree with the resolved intent, and catch hallucinated columns."""
+# ── intent-consistency check (the hallucinated-filter guard) ─────────────
+_LOCID_IN_RE = re.compile(
+    r"\blocation_id\s*(?:=|in)\s*\(?\s*([\d,\s]+)\)?",
+    re.IGNORECASE)
+_WILAYA_NAME_FILTER_RE = re.compile(
+    r"\bwilaya\s*(?:=|in)\s*\(?\s*'[^']*'",
+    re.IGNORECASE)
+
+
+def consistency_check(sql: str, entities: dict, query: str = "",
+                      schema=None) -> list[str]:
+    """Catch hallucinated columns, fragile wilaya-name filters, and id-set
+    mismatches. The new wilaya policy is: filter by location_id integer."""
     issues: list[str] = []
     s = sql or ""
     low = s.lower()
-    requested = {w.lower() for w in (entities or {}).get("wilayas", [])}
+    requested_ids = set(int(i) for i in (entities or {}).get("wilaya_ids", []))
+    requested_names = [w for w in (entities or {}).get("wilayas", [])]
 
-    # check for hallucinated columns (schema parameter passed by caller)
+    # 1. hallucinated columns — every identifier must exist somewhere
     if schema is not None:
         all_valid_cols = {c for t in schema.all_tables()
                          for c in schema.column_names(t)}
-        col_refs = re.findall(r"\b(?:[a-z_]\w*\.)?([a-z_]\w*)\b", s,
-                              re.IGNORECASE)
-        for col in set(col_refs):
-            # skip SQL keywords and common tokens
-            if (col.lower() not in {"select", "from", "where", "and", "or",
-                                     "join", "on", "as", "group", "by",
-                                     "order", "limit", "having", "in", "not",
-                                     "is", "null", "case", "when", "then",
-                                     "else", "end", "with", "as", "distinct",
-                                     "asc", "desc", "sum", "avg", "count",
-                                     "max", "min", "cast", "to", "left",
-                                     "right", "inner", "outer", "cross",
-                                     "union", "except", "intersect"}
+        keywords = {"select", "from", "where", "and", "or", "join", "on",
+                    "as", "group", "by", "order", "limit", "having", "in",
+                    "not", "is", "null", "case", "when", "then", "else",
+                    "end", "with", "distinct", "asc", "desc", "sum", "avg",
+                    "count", "max", "min", "cast", "to", "left", "right",
+                    "inner", "outer", "cross", "union", "except",
+                    "intersect", "between"}
+        for col in {m for m in re.findall(
+                r"\b(?:[a-z_]\w*\.)?([a-z_]\w*)\b", s, re.IGNORECASE)}:
+            if (col.lower() not in keywords
+                    and not col.isdigit()
                     and col not in all_valid_cols):
                 issues.append(f"column '{col}' does not exist in any table")
 
-    resolver = get_resolver()
-    sql_wilayas: set[str] = set()
-    for lit in re.findall(r"'([^']*)'", s):       # quoted string literals
-        canon = resolver.resolve_wilaya(lit)
-        if canon:
-            sql_wilayas.add(canon.lower())
+    # 2. wilaya filter must be by location_id (an integer), not by name string
+    if _WILAYA_NAME_FILTER_RE.search(s) and requested_ids:
+        issues.append(
+            "wilaya filter uses a name string in WHERE; use "
+            "`location_id` and the integer ids from the reference knowledge")
 
-    for w in sorted(sql_wilayas - requested):
-        issues.append(f"query filters wilaya '{w}', which was not requested")
-    for w in sorted(requested - sql_wilayas):
-        issues.append(f"query is missing the requested wilaya filter '{w}'")
+    # 3. id-set parity: the ids in the SQL must equal the ids the user wanted
+    sql_ids: set[int] = set()
+    for m in _LOCID_IN_RE.finditer(s):
+        for tok in m.group(1).split(","):
+            tok = tok.strip()
+            if tok.isdigit():
+                sql_ids.add(int(tok))
+    if requested_ids:
+        for extra in sorted(sql_ids - requested_ids):
+            issues.append(f"query filters location_id {extra}, "
+                          f"which the user did not request")
+        for missing in sorted(requested_ids - sql_ids):
+            issues.append(f"query is missing the requested location_id "
+                          f"{missing}")
+    elif sql_ids and not requested_names:
+        # ids in SQL but user named no wilaya at all → hallucinated filter
+        issues.append(
+            "query filters by location_id but the user named no wilaya")
 
     if is_trend_query(query) and "group by" in low and "week_start" not in low:
-        issues.append("trend question but the query does not group by week_start")
+        issues.append("trend question but the query does not group by "
+                      "week_start")
     return issues
 
 
 def correction_hint(issues: list[str], entities: dict) -> str:
     """Build a targeted correction appended to the retry SQL instruction."""
-    wilayas = (entities or {}).get("wilayas", [])
+    wilayas = (entities or {}).get("wilayas", []) or []
+    ids = (entities or {}).get("wilaya_ids", []) or []
+    id_pairs = ", ".join(f"{w} = {i}" for w, i in zip(wilayas, ids))
+    id_list = ", ".join(str(i) for i in ids)
     parts: list[str] = []
-    if any("not requested" in i for i in issues):
-        parts.append("Filter by wilaya ONLY for: " + ", ".join(wilayas) + "."
-                     if wilayas else
-                     "Do NOT add any wilaya filter — the user named no wilaya.")
-    if any("missing the requested" in i for i in issues):
-        parts.append("You MUST filter dl.wilaya for: " + ", ".join(wilayas) + ".")
+
+    if any("name string" in i for i in issues):
+        parts.append(
+            "Do NOT filter by wilaya name. Use `WHERE <table>.location_id "
+            f"IN ({id_list})` with the integer ids ({id_pairs}).")
+    if any("which the user did not request" in i for i in issues):
+        parts.append(
+            f"Filter by ONLY these location_id values: {id_list}."
+            if ids else
+            "Do NOT add any location_id filter — the user named no wilaya.")
+    if any("missing the requested location_id" in i for i in issues):
+        parts.append(
+            f"You MUST include every requested location_id: {id_list}.")
+    if any("does not exist in any table" in i for i in issues):
+        parts.append(
+            "Use only columns that appear in the schema; the previous query "
+            "referenced one that does not exist.")
+    if any("named no wilaya" in i for i in issues):
+        parts.append(
+            "Remove the location_id filter — the user did not name any wilaya.")
     if any("week_start" in i for i in issues):
         parts.append("GROUP BY week_start and ORDER BY week_start.")
     return " ".join(parts)

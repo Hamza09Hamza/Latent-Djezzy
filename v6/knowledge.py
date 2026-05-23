@@ -1,10 +1,15 @@
-"""v6/knowledge.py — BGE-M3 retrieval over the KPI knowledge base.
+"""v6/knowledge.py — BGE-M3 retrieval over the KPI + wilaya knowledge base.
 
 A small in-memory vector store grounds the router SLM. Chunks come from
-three sources:
+four sources:
   - the database's own `data_catalog` table (authoritative column docs),
   - data/kpi_catalog.json (multilingual synonyms per KPI),
-  - data/glossary.json (definitions, business context, join rules).
+  - data/glossary.json (definitions, business context, join rules),
+  - the live `dim_location` table joined with data/wilaya_aliases.json
+    (every wilaya as `name → location_id`, with English/Arabic/historical
+    aliases). The SLM uses these chunks to write `WHERE location_id = N`
+    instead of fragile `WHERE wilaya = '<name>'`, so misspellings and
+    French/English variants stop silently dropping rows.
 
 At query time the top-k chunks and a grounding score (the top cosine) are
 returned. That score is one of the deterministic signals the orchestrator
@@ -74,8 +79,53 @@ def _load_json(path: str):
         return json.load(f)
 
 
+def _load_wilaya_aliases() -> dict:
+    """Read data/wilaya_aliases.json — {canonical: [aliases]}. Optional."""
+    if not os.path.isfile(V6Config.WILAYA_ALIASES_PATH):
+        return {}
+    try:
+        with open(V6Config.WILAYA_ALIASES_PATH, encoding="utf-8") as f:
+            raw = json.load(f)
+        return {k: v for k, v in raw.items()
+                if not k.startswith("_") and isinstance(v, list)}
+    except Exception:  # noqa: BLE001 — broken file degrades to no aliases
+        return {}
+
+
+def _build_wilaya_chunks() -> list[dict]:
+    """One chunk per wilaya: 'Wilaya Alger (location_id=16). Also called: ...'
+
+    The SLM is told to write `WHERE location_id = N` using the integer it sees
+    in this chunk. That removes the whole name-spelling fragility ('Algiers'
+    vs 'Alger') from the SQL path.
+    """
+    chunks: list[dict] = []
+    aliases = _load_wilaya_aliases()
+    try:
+        conn = db_connect()
+        cur = conn.cursor()
+        cur.execute("SELECT location_id, wilaya FROM dim_location "
+                    "WHERE wilaya IS NOT NULL ORDER BY location_id")
+        rows = cur.fetchall()
+        conn.close()
+    except Exception:  # noqa: BLE001 — db unavailable degrades to empty
+        return chunks
+    for loc_id, wilaya in rows:
+        alts = aliases.get(wilaya, [])
+        alt_str = (f" Also known as: {', '.join(alts)}." if alts else "")
+        chunks.append({
+            "kind": "wilaya",
+            "wilaya": wilaya,
+            "location_id": int(loc_id),
+            "text": (f"Wilaya '{wilaya}' has location_id={int(loc_id)}.{alt_str} "
+                     f"To filter SQL by this wilaya use "
+                     f"`location_id = {int(loc_id)}` — not the wilaya name."),
+        })
+    return chunks
+
+
 def build_chunks() -> list[dict]:
-    """Flatten the three knowledge sources into retrievable text chunks."""
+    """Flatten the four knowledge sources into retrievable text chunks."""
     chunks: list[dict] = []
 
     # data_catalog — the database documenting its own columns
@@ -92,6 +142,9 @@ def build_chunks() -> list[dict]:
         conn.close()
     except Exception:  # noqa: BLE001 — data_catalog optional
         pass
+
+    # wilaya identities — one chunk per wilaya with location_id
+    chunks.extend(_build_wilaya_chunks())
 
     # kpi_catalog.json — multilingual synonyms
     if os.path.isfile(V6Config.KPI_CATALOG_PATH):

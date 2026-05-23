@@ -143,14 +143,16 @@ class DBSchema:
         if self.join_map:
             lines += [
                 "",
-                "JOIN RULE — read carefully:",
+                "LOCATION RULE — read carefully:",
                 "  Metric tables (" + ", ".join(self.metric_tables()) + ")",
-                "  store location as `location_id`, NOT as a wilaya name.",
-                "  To filter or group by a wilaya you MUST join dim_location:",
-                "    JOIN dim_location ON <table>.location_id "
-                "= dim_location.location_id",
-                "  then use dim_location.wilaya. No metric table has its own "
-                "`wilaya` column.",
+                "  store location as `location_id` (an integer), NOT as a "
+                "wilaya name string.",
+                "  Filter by wilaya using the location_id from the reference "
+                "knowledge — e.g. `WHERE g.location_id = 16` for Alger — "
+                "never by the wilaya name. Names have spelling variants and "
+                "silently match nothing; ids do not.",
+                "  JOIN dim_location only when you need to SHOW the wilaya "
+                "name in the SELECT (then use dl.wilaya).",
             ]
         if self.date_range:
             lines += [

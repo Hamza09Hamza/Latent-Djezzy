@@ -248,10 +248,16 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
                              "OPEX/CAPEX — and optionally a wilaya and period?"),
         }, thoughts)
 
-    # resolve entities (deterministic)
+    # resolve entities (deterministic): names → canonical + location_ids
     max_date = schema.date_range[1] if schema.date_range else None
     entities = get_resolver().resolve_all(
         query, routing.get("filters", {}), max_date)
+    if entities.get("wilayas"):
+        id_map = ", ".join(f"{w}→{i}" for w, i in
+                           zip(entities["wilayas"],
+                               entities.get("wilaya_ids", [])))
+        thoughts.append({"kind": "thinking",
+                         "text": f"Resolved wilayas: {id_map}."})
 
     # phase 2 — generate ⇄ validate (bounded micro-retry)
     sql, sql_valid, sql_issues = "", False, []
@@ -260,6 +266,9 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
         if attempt > 1 and sql_issues:
             hint = correction_hint(sql_issues, entities)
             if hint:
+                thoughts.append({"kind": "thinking",
+                                 "text": (f"Retrying SQL — last attempt had "
+                                          f"issues: {'; '.join(sql_issues[:2])}.")})
                 instr += ("\n\nCORRECTION — your previous attempt was wrong. "
                           + hint)
         res = get_slm().run_sqlgen(thread, instr)
