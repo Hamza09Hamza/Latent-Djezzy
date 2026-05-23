@@ -76,10 +76,14 @@ def test_entities():
     scan = r.scan_query("compare churn between Algiers and Constantine")
     check("scan finds both wilayas", set(scan) == {"Alger", "Constantine"},
           str(scan))
-    tr = r.resolve_time("revenue last month", "2026-04-29")
-    check("'last month' resolves to a date range",
-          tr is not None and tr["end"] == "2026-04-29")
-    check("segment detection", r.resolve_segment("prepaid churn") == "prepaid")
+    # Time and segment used to be resolved by Python substring lists in
+    # entities.py; that's gone — the router SLM extracts them now. The
+    # resolver returns only wilaya knowledge.
+    out = r.resolve_all("compare churn in Algiers and Constantine",
+                        {"wilayas": ["Algiers", "Constantine"]})
+    check("resolve_all returns wilayas + wilaya_ids_map",
+          "wilaya_ids_map" in out and set(out["wilayas"]) ==
+          {"Alger", "Constantine"}, str(out))
 
 
 # ── C. SQL tools ─────────────────────────────────────────────────────────

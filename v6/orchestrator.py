@@ -22,12 +22,6 @@ import re
 
 from .config import V6Config
 
-# Structural columns that are never KPI indicators — if routing only contains
-# these (plus dim_location), the query names no concrete metric and is likely
-# a short follow-up that the router mis-classified.
-_STRUCTURAL_COLS = {"wilaya", "location_id", "week_start", "id", "commune",
-                    "wilaya_code", "region", "code"}
-
 
 def _last_data_turn(turns: list[dict]) -> dict | None:
     for turn in reversed(turns or []):
@@ -36,11 +30,20 @@ def _last_data_turn(turns: list[dict]) -> dict | None:
     return None
 
 
-def _is_implicit_followup(query: str, valid_cols: list[str]) -> bool:
-    """True when the query is so short / KPI-free that it's almost certainly
-    a follow-up like 'and for Constantine?' or 'what about Oran?'."""
+def _is_implicit_followup(query: str, valid_cols: list[str],
+                          valid_tables: list[str], schema) -> bool:
+    """True when the query is so short and KPI-free that it's almost certainly
+    a follow-up like 'and for Constantine?' or 'what about Oran?'.
+
+    "KPI-free" is decided from the schema: a real metric column is one that
+    appears as numeric in some metric table. No hand-curated structural list.
+    """
     words = re.sub(r"[^\w\s]", " ", query or "").split()
-    metric_cols = [c for c in valid_cols if c not in _STRUCTURAL_COLS]
+    numeric_in_scope: set[str] = set()
+    for t in valid_tables:
+        if schema is not None and schema.has_table(t):
+            numeric_in_scope.update(schema.numeric_columns(t))
+    metric_cols = [c for c in valid_cols if c in numeric_in_scope]
     return len(words) <= 6 and not metric_cols
 
 
@@ -64,10 +67,11 @@ def assemble(query: str, routing: dict, capabilities: list[str],
 
     # follow-up: inherit tables / columns from the last data turn.
     # Fire when (a) no valid tables at all, OR (b) the query is short and
-    # the router produced only structural columns — a sign it grabbed the
+    # the router produced only non-metric columns — a sign it grabbed the
     # wrong table to fill in a follow-up like "and for Constantine?".
     inherited = False
-    force_inherit = _is_implicit_followup(query, valid_cols)
+    force_inherit = _is_implicit_followup(query, valid_cols,
+                                          valid_tables, schema)
     if not valid_tables or force_inherit:
         last = _last_data_turn(turns)
         if last:

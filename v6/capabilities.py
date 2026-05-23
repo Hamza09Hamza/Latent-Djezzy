@@ -16,6 +16,7 @@ capability nodes call:
 from __future__ import annotations
 import datetime
 import os
+import re
 
 import matplotlib
 matplotlib.use("Agg")                       # headless — no display needed
@@ -30,7 +31,18 @@ _env = Environment(
     autoescape=select_autoescape(["html", "xml"]),
     trim_blocks=True, lstrip_blocks=True)
 
-_DATE_HINTS = ("week_start", "week", "date", "month", "day", "period")
+# An ISO date literal at the start of the string — what SQLite/MySQL emit
+# for DATE / DATETIME / TIMESTAMP columns. Used to detect date columns from
+# the data shape instead of guessing from the column name.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _looks_like_date(v) -> bool:
+    if isinstance(v, (datetime.date, datetime.datetime)):
+        return True
+    if v is None:
+        return False
+    return bool(_ISO_DATE_RE.match(str(v)))
 
 
 # ── shared helpers ───────────────────────────────────────────────────────
@@ -89,9 +101,15 @@ def make_chart(rows: list[dict], columns: list[str], query: str = "",
         return {"ok": False, "path": "", "chart_type": "",
                 "error": "no data to chart"}
 
+    # Identify the date column by what the values look like, not by name.
+    # Any column whose non-null values all parse as ISO dates is the date
+    # axis — works for `week_start`, `as_of_dt`, `period`, anything.
     date_col = next(
         (c for c in columns
-         if any(h in c.lower() for h in _DATE_HINTS)), None)
+         if any(r.get(c) is not None for r in rows)
+         and all(_looks_like_date(r.get(c)) for r in rows
+                 if r.get(c) is not None)),
+        None)
     numeric = [c for c in _numeric_columns(rows, columns) if c != date_col]
     if not numeric:
         return {"ok": False, "path": "", "chart_type": "",

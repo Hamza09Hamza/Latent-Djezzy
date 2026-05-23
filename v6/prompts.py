@@ -129,18 +129,6 @@ Rules:
 - Output ONLY the SQL statement: no JSON, no markdown, no comment.
 - Start the output with SELECT or WITH."""
 
-# Columns that describe structure, not a measured KPI.
-_STRUCTURAL = {"wilaya", "location_id", "week_start", "id", "commune",
-               "wilaya_code", "region", "code"}
-_TREND_WORDS = ("trend", "over time", "evolution", "weekly", "week by week",
-                "history", "historical", "timeline", "progression", "evolve")
-
-
-def is_trend_query(query: str) -> bool:
-    q = (query or "").lower()
-    return any(w in q for w in _TREND_WORDS)
-
-
 def build_router_messages(query: str, schema_prompt: str, knowledge: str,
                           history: str = "", feedback: str = "") -> list[dict]:
     """Assemble the chat messages for the router (phase 1)."""
@@ -166,18 +154,15 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
 
     For every wilaya the user mentioned, surface the FULL list of its
     commune location_ids — that is the only way to get a true wilaya-level
-    aggregate from the commune-level dim_location. The example uses those
-    ids directly in a `WHERE location_id IN (...)` filter.
+    aggregate from the commune-level dim_location. Trend vs comparison vs
+    aggregate shape is left to the SLM to decide from the user's words.
     """
+    del query  # the SLM sees the user query separately and judges shape
     tables = [t for t in routing.get("tables", [])
               if schema.has_table(t) and t != "dim_location"]
-    cols = [c for c in routing.get("columns", []) if c not in _STRUCTURAL]
     wilayas = (entities or {}).get("wilayas", []) or []
     ids_map: dict = (entities or {}).get("wilaya_ids_map", {}) or {}
 
-    # Build the per-wilaya id list block — this IS the knowledge the model
-    # needs to compose the filter. Listing each wilaya's ids on its own
-    # line lets the SLM see the structure even when the lists are long.
     id_block = ""
     all_ids: list[int] = []
     if wilayas and any(ids_map.get(w) for w in wilayas):
@@ -196,31 +181,20 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
 
     t = tables[0]
     alias = t[0]
-    kpis = cols[:2] or schema.numeric_columns(t)[:1] or ["*"]
+    # Pick a KPI to show in the example: prefer a routing-supplied column
+    # that is actually numeric in the schema, fall back to any numeric
+    # column. No hand-curated "structural" list — the schema knows.
+    numeric_cols = set(schema.numeric_columns(t))
+    routing_kpis = [c for c in routing.get("columns", [])
+                    if c in numeric_cols]
+    kpis = routing_kpis[:2] or list(numeric_cols)[:1] or ["*"]
     agg = ", ".join(f"AVG({alias}.{c}) AS {c}" for c in kpis if c != "*")
     needs_join = schema.needs_location_join(t)
     id_in = ", ".join(str(i) for i in all_ids) if all_ids else ""
     join = (f"JOIN dim_location dl ON {alias}.location_id = dl.location_id"
             if needs_join and len(wilayas) > 1 else "")
 
-    if is_trend_query(query):
-        if len(wilayas) > 1:
-            example = (f"SELECT dl.wilaya, {alias}.week_start, "
-                       f"{agg or alias + '.*'} "
-                       f"FROM {t} {alias} {join} "
-                       f"WHERE {alias}.location_id IN ({id_in}) "
-                       f"GROUP BY dl.wilaya, {alias}.week_start "
-                       f"ORDER BY dl.wilaya, {alias}.week_start")
-            shape = "a weekly trend by wilaya"
-        else:
-            where = (f" WHERE {alias}.location_id IN ({id_in})"
-                     if all_ids else "")
-            example = (f"SELECT {alias}.week_start, {agg or alias + '.*'} "
-                       f"FROM {t} {alias}{where} "
-                       f"GROUP BY {alias}.week_start "
-                       f"ORDER BY {alias}.week_start")
-            shape = "a weekly trend"
-    elif len(wilayas) > 1:
+    if len(wilayas) > 1:
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
                    f"FROM {t} {alias} {join} "
                    f"WHERE {alias}.location_id IN ({id_in}) "
@@ -232,7 +206,6 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
                    f"WHERE {alias}.location_id IN ({id_in})")
         shape = "an aggregate for one wilaya"
     elif needs_join:
-        # no wilaya filter, but wilaya breakdown asked for
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
                    f"FROM {t} {alias} "
                    f"JOIN dim_location dl ON {alias}.location_id = "
@@ -244,10 +217,11 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
 
     return (_SQLGEN_BASE
             + id_block
-            + f"\n\nThis question needs {shape}. A correct query shape is:\n"
+            + f"\n\nThis question fits {shape}. One valid shape is:\n"
             + f"  {example}\n"
-            + "Adapt it to the user's exact question. Filter by the full "
-            + "location_id list from the resolved wilayas above.")
+            + "Adapt it to the user's exact question — decide whether to "
+            + "GROUP BY week_start for trends, add a time WHERE clause, or "
+            + "group by another dimension based on what the user asked.")
 
 
 def parse_router_output(text: str) -> dict:

@@ -21,7 +21,6 @@ import re
 
 from .config import V6Config
 from .entities import get_resolver
-from .prompts import is_trend_query
 from .schema import db_connect
 
 # Whole-word write / DDL keywords that must never appear in a query.
@@ -108,7 +107,6 @@ def consistency_check(sql: str, entities: dict, query: str = "",
     and aliases stop tripping false positives."""
     issues: list[str] = []
     s = sql or ""
-    low = s.lower()
     requested_names = list((entities or {}).get("wilayas", []) or [])
     ids_map: dict = (entities or {}).get("wilaya_ids_map", {}) or {}
     all_requested_ids: set[int] = set()
@@ -164,9 +162,7 @@ def consistency_check(sql: str, entities: dict, query: str = "",
             "wilaya filter uses a name string in WHERE; replace it with "
             "`location_id IN (...)` using the ids from the reference knowledge")
 
-    if is_trend_query(query) and "group by" in low and "week_start" not in low:
-        issues.append(
-            "trend question but the query does not group by week_start")
+    del query  # trend-vs-aggregate now left to the SLM, no rule check
     return issues
 
 

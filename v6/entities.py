@@ -18,7 +18,6 @@ JOIN required.
 """
 
 from __future__ import annotations
-import datetime as _dt
 import json
 import os
 import re
@@ -27,8 +26,6 @@ from difflib import get_close_matches
 
 from .config import V6Config
 from .schema import db_connect
-
-_SEGMENTS = ("prepaid", "postpaid", "b2b", "b2c")
 
 
 def _norm(s: str) -> str:
@@ -133,58 +130,23 @@ class Resolver:
                 i += 1
         return found
 
-    # ── time + segment ───────────────────────────────────────────────────
-    def resolve_time(self, query: str, max_date: str | None) -> dict | None:
-        """Relative time expressions, resolved against the last data week."""
-        if not max_date:
-            return None
-        try:
-            hi = _dt.date.fromisoformat(max_date[:10])
-        except ValueError:
-            return None
-        q = query.lower()
-
-        def span(days: int) -> dict:
-            return {"start": (hi - _dt.timedelta(days=days)).isoformat(),
-                    "end": hi.isoformat()}
-
-        m = re.search(r"last\s+(\d+)\s+weeks?", q)
-        if m:
-            return span(7 * int(m.group(1)))
-        m = re.search(r"last\s+(\d+)\s+months?", q)
-        if m:
-            return span(30 * int(m.group(1)))
-        if any(k in q for k in ("last quarter", "past quarter", "previous quarter")):
-            return span(90)
-        if any(k in q for k in ("last month", "past month")):
-            return span(30)
-        if any(k in q for k in ("last week", "past week")):
-            return span(7)
-        if any(k in q for k in ("recently", "lately", "recent weeks")):
-            return span(30)
-        if any(k in q for k in ("this year", "year to date", "ytd")):
-            return {"start": f"{hi.year}-01-01", "end": hi.isoformat()}
-        return None
-
-    def resolve_segment(self, query: str) -> str | None:
-        q = query.lower()
-        for seg in _SEGMENTS:
-            if seg in q:
-                return seg
-        return None
-
     def ids_for(self, wilaya: str) -> list[int]:
         """Every commune location_id that belongs to a canonical wilaya."""
         return list(self.wilaya_to_ids.get(wilaya, []))
 
     # ── convenience ──────────────────────────────────────────────────────
     def resolve_all(self, query: str, router_filters: dict | None,
-                    max_date: str | None) -> dict:
+                    max_date: str | None = None) -> dict:
         """Combine router-supplied filters with a direct query scan.
 
         Returns `wilayas` (canonical French spellings) and `wilaya_ids_map`
-        ({wilaya: [all its commune location_ids]}). SQL filters on the IDs;
-        the wilaya name is kept for display + diagnostics."""
+        ({wilaya: [all its commune location_ids]}). Time and segment are
+        no longer resolved here — the router SLM already extracts those
+        from the query, and the SQL-gen SLM reads them from the routing
+        object plus the schema's date-range hint, so a Python substring
+        list is just brittle duplication. The `max_date` argument is kept
+        for backwards compatibility but ignored."""
+        del max_date  # noqa: ignored — SLM handles time math
         rf = router_filters or {}
         from_router = self.resolve_many(rf.get("wilayas", []))
         scanned = self.scan_query(query)
@@ -194,8 +156,6 @@ class Resolver:
             "wilayas": wilayas,
             "wilaya_ids_map": ids_map,
             "unresolved_wilayas": from_router["unresolved"],
-            "segment": self.resolve_segment(query) or rf.get("segment"),
-            "time_range": self.resolve_time(query, max_date),
         }
 
 

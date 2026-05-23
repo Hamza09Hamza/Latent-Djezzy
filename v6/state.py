@@ -42,7 +42,7 @@ class AgentState(TypedDict, total=False):
     router_raw: str              # raw router model output
     routing: dict                # parsed + schema-validated routing object
     feedback: str                # failure note carried into an SQL retry
-    entities: dict               # {wilayas, segment, time_range, recipients}
+    entities: dict               # {wilayas, wilaya_ids_map, unresolved_wilayas}
     sql: str
     sql_valid: bool
     sql_issues: list[str]
