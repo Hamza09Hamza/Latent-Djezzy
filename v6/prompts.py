@@ -91,37 +91,40 @@ _SQLGEN_BASE = """PHASE 2 - SQL GENERATION.
 You now switch from routing to SQL. Write ONE read-only SQL SELECT that
 answers the user's question.
 
-WILAYA RULE: `dim_location` is commune-level (~25 communes per wilaya).
-Each wilaya therefore covers MANY `location_id` values. The reference
-knowledge above lists, for every wilaya named by the user, the complete
-set of its commune location_ids. To filter for a whole wilaya, copy that
-full set into the WHERE clause:
+WILAYA RULE: `dim_location` is commune-level (~25 communes per wilaya, up
+to 57 for Alger). NEVER list the commune ids by hand — the list is too
+long. Always use a subquery to resolve them at runtime:
 
-    -- one wilaya (all its communes)
-    WHERE <table>.location_id IN (<every id for that wilaya>)
+    -- one wilaya
+    WHERE <table>.location_id IN (
+        SELECT location_id FROM dim_location WHERE wilaya = '<canonical name>'
+    )
 
-    -- several wilayas (concat the lists)
-    WHERE <table>.location_id IN (<every id from each wilaya>)
+    -- several wilayas
+    WHERE <table>.location_id IN (
+        SELECT location_id FROM dim_location WHERE wilaya IN ('<A>', '<B>')
+    )
 
-No JOIN with dim_location is needed for filtering. JOIN dim_location only
-when the SELECT must display the wilaya name (e.g. for comparisons that
-need one row per wilaya — then `GROUP BY dl.wilaya`):
+The reference knowledge above gives the exact canonical French spelling
+for every wilaya mentioned by the user. Copy that spelling exactly into
+the WHERE clause of the subquery.
+
+COMPARISON RULE: when the user compares two or more wilayas, the query
+MUST JOIN dim_location and GROUP BY dl.wilaya so each wilaya gets its own
+row. Example shape:
 
     SELECT dl.wilaya, SUM(g.total_revenue)
     FROM global_revenue g
     JOIN dim_location dl ON g.location_id = dl.location_id
-    WHERE g.location_id IN (<ids for wilaya A>, <ids for wilaya B>)
+    WHERE g.location_id IN (
+        SELECT location_id FROM dim_location WHERE wilaya IN ('Alger', 'Oran')
+    )
     GROUP BY dl.wilaya
-
-COMPARISON RULE: when the user compares two or more wilayas, the IN list
-MUST contain every commune id from every named wilaya, and the query MUST
-JOIN dim_location and `GROUP BY dl.wilaya` so each wilaya shows on its
-own row.
 
 Rules:
 - Use ONLY tables and columns from the schema and the routing analysis above.
 - Apply ONLY the filters the user actually asked for. Do not invent wilaya,
-  date, or segment filters; do not narrow a "by wilaya" query to a handful.
+  date, or segment filters.
 - For a "trend" or "over time" question, GROUP BY week_start and ORDER BY
   week_start; only add dl.wilaya to the GROUP BY when the user compares
   wilayas as well.
@@ -152,58 +155,52 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
                              schema) -> str:
     """SQL-gen instruction with one concrete, schema-correct example.
 
-    For every wilaya the user mentioned, surface the FULL list of its
-    commune location_ids — that is the only way to get a true wilaya-level
-    aggregate from the commune-level dim_location. Trend vs comparison vs
-    aggregate shape is left to the SLM to decide from the user's words.
+    Surfaces the canonical French spelling for every wilaya the user named.
+    The SLM writes a compact subquery instead of a hand-written id list, so
+    the SQL stays short regardless of how many communes a wilaya has.
     """
     del query  # the SLM sees the user query separately and judges shape
     tables = [t for t in routing.get("tables", [])
               if schema.has_table(t) and t != "dim_location"]
     wilayas = (entities or {}).get("wilayas", []) or []
-    ids_map: dict = (entities or {}).get("wilaya_ids_map", {}) or {}
 
-    id_block = ""
-    all_ids: list[int] = []
-    if wilayas and any(ids_map.get(w) for w in wilayas):
-        lines = []
-        for w in wilayas:
-            ids = ids_map.get(w, [])
-            all_ids.extend(ids)
-            lines.append(f"  {w} ({len(ids)} communes): "
-                         + ", ".join(str(i) for i in ids))
-        id_block = ("\n\nRESOLVED WILAYAS (each line lists the commune "
-                    "location_ids that make up the wilaya — copy them ALL "
-                    "into the WHERE IN clause):\n" + "\n".join(lines))
+    # Canonical name block — just the names, no id lists
+    names_block = ""
+    if wilayas:
+        canon_list = ", ".join(f"'{w}'" for w in wilayas)
+        names_block = (
+            f"\n\nRESOLVED WILAYAS (canonical French spellings — use these "
+            f"EXACTLY in the subquery WHERE clause): {canon_list}")
 
     if not tables:
-        return _SQLGEN_BASE + id_block
+        return _SQLGEN_BASE + names_block
 
     t = tables[0]
     alias = t[0]
-    # Pick a KPI to show in the example: prefer a routing-supplied column
-    # that is actually numeric in the schema, fall back to any numeric
-    # column. No hand-curated "structural" list — the schema knows.
+    # Pick a KPI for the example: prefer a routing-supplied numeric column,
+    # fall back to any numeric column in the table.
     numeric_cols = set(schema.numeric_columns(t))
-    routing_kpis = [c for c in routing.get("columns", [])
-                    if c in numeric_cols]
+    routing_kpis = [c for c in routing.get("columns", []) if c in numeric_cols]
     kpis = routing_kpis[:2] or list(numeric_cols)[:1] or ["*"]
     agg = ", ".join(f"AVG({alias}.{c}) AS {c}" for c in kpis if c != "*")
     needs_join = schema.needs_location_join(t)
-    id_in = ", ".join(str(i) for i in all_ids) if all_ids else ""
-    join = (f"JOIN dim_location dl ON {alias}.location_id = dl.location_id"
-            if needs_join and len(wilayas) > 1 else "")
 
     if len(wilayas) > 1:
+        wnames = ", ".join(f"'{w}'" for w in wilayas)
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
-                   f"FROM {t} {alias} {join} "
-                   f"WHERE {alias}.location_id IN ({id_in}) "
+                   f"FROM {t} {alias} "
+                   f"JOIN dim_location dl ON {alias}.location_id = dl.location_id "
+                   f"WHERE {alias}.location_id IN "
+                   f"(SELECT location_id FROM dim_location "
+                   f"WHERE wilaya IN ({wnames})) "
                    f"GROUP BY dl.wilaya")
         shape = "a comparison across wilayas"
     elif wilayas:
         example = (f"SELECT {agg or alias + '.*'} "
                    f"FROM {t} {alias} "
-                   f"WHERE {alias}.location_id IN ({id_in})")
+                   f"WHERE {alias}.location_id IN "
+                   f"(SELECT location_id FROM dim_location "
+                   f"WHERE wilaya = '{wilayas[0]}')")
         shape = "an aggregate for one wilaya"
     elif needs_join:
         example = (f"SELECT dl.wilaya, {agg or alias + '.*'} "
@@ -216,7 +213,7 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
         shape = "an aggregate"
 
     return (_SQLGEN_BASE
-            + id_block
+            + names_block
             + f"\n\nThis question fits {shape}. One valid shape is:\n"
             + f"  {example}\n"
             + "Adapt it to the user's exact question — decide whether to "

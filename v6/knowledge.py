@@ -6,10 +6,11 @@ four sources:
   - data/kpi_catalog.json (multilingual synonyms per KPI),
   - data/glossary.json (definitions, business context, join rules),
   - the live `dim_location` table joined with data/wilaya_aliases.json
-    (every wilaya as `name → location_id`, with English/Arabic/historical
-    aliases). The SLM uses these chunks to write `WHERE location_id = N`
-    instead of fragile `WHERE wilaya = '<name>'`, so misspellings and
-    French/English variants stop silently dropping rows.
+    (every wilaya with its canonical French name, aliases, and commune count).
+    The SLM uses these chunks to write a compact subquery
+    `WHERE location_id IN (SELECT location_id FROM dim_location WHERE wilaya = '<name>')`
+    instead of a fragile inline list of commune IDs. This keeps the SQL small
+    regardless of how many communes a wilaya has (Alger=57, Oran=26, …).
 
 At query time the top-k chunks and a grounding score (the top cosine) are
 returned. That score is one of the deterministic signals the orchestrator
@@ -93,14 +94,20 @@ def _load_wilaya_aliases() -> dict:
 
 
 def _build_wilaya_chunks() -> list[dict]:
-    """One chunk per wilaya — name + aliases + the FULL list of commune
-    `location_id` values that belong to it.
+    """One chunk per wilaya — canonical name, aliases, commune count, and the
+    correct subquery pattern to use in SQL.
 
-    `dim_location` is commune-level (~25 communes per wilaya). One
-    location_id covers one commune, not a wilaya. So we pre-aggregate at
-    startup: for each wilaya, pull every commune's id, and put them in a
-    single chunk. The SLM then writes `WHERE location_id IN (...all ids...)`
-    and gets a true wilaya-level aggregate with no JOIN needed.
+    `dim_location` is commune-level (~25 communes per wilaya). Rather than
+    listing every commune id in the chunk text (which would make the SQL IN
+    clause explode to hundreds of tokens), we teach the SLM to use a compact
+    subquery that delegates id resolution to the database at runtime:
+
+        WHERE <table>.location_id IN (
+            SELECT location_id FROM dim_location WHERE wilaya = '<canonical>'
+        )
+
+    This works for any commune count, keeps SQL short, and is still
+    knowledge-driven: the canonical French name comes from the RAG chunk.
     """
     chunks: list[dict] = []
     aliases = _load_wilaya_aliases()
@@ -119,16 +126,16 @@ def _build_wilaya_chunks() -> list[dict]:
     for wilaya, ids in wilaya_ids.items():
         alts = aliases.get(wilaya, [])
         alt_str = (f" Aliases: {', '.join(alts)}." if alts else "")
-        ids_str = ", ".join(str(i) for i in ids)
         chunks.append({
             "kind": "wilaya",
             "wilaya": wilaya,
-            "location_ids": ids,
+            "location_ids": ids,          # kept for entity resolver; not in text
             "text": (f"Wilaya '{wilaya}' (canonical French spelling).{alt_str} "
-                     f"Covers {len(ids)} commune(s) with these "
-                     f"location_id values: {ids_str}. "
-                     f"To filter SQL for the whole wilaya, use "
-                     f"`<table>.location_id IN ({ids_str})` — no JOIN needed."),
+                     f"Covers {len(ids)} commune(s). "
+                     f"To filter SQL for the whole wilaya use a subquery: "
+                     f"WHERE <table>.location_id IN "
+                     f"(SELECT location_id FROM dim_location "
+                     f"WHERE wilaya = '{wilaya}')"),
         })
     return chunks
 

@@ -62,7 +62,7 @@ class V6Config:
     USE_SPECULATIVE  = _env("SPECULATIVE", "1") == "1"  # 0.5B drafter → 2-4x speed
 
     ROUTER_MAX_NEW_TOKENS = 128   # routing JSON rarely exceeds 80 tokens
-    SQLGEN_MAX_NEW_TOKENS = 160   # SQL rarely exceeds 120 tokens
+    SQLGEN_MAX_NEW_TOKENS = 256   # subquery pattern; inline ID lists removed
 
     # ── RAG encoder — frozen BGE-M3 (1024-d) ─────────────────────────────
     BGE_M3_LOCAL_DIR = os.path.join(MODELS_DIR, "bge-m3")

@@ -72,12 +72,17 @@ _FROM_OR_JOIN_RE = re.compile(
     r"(?:\s+(?:as\s+)?`?([a-zA-Z_]\w*)`?)?", re.IGNORECASE)
 _QUALIFIED_REF_RE = re.compile(
     r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b")
-_LOCID_IN_RE = re.compile(
-    r"\blocation_id\s*(?:=|in)\s*\(?\s*([\d,\s]+)\)?",
-    re.IGNORECASE)
-_WILAYA_NAME_FILTER_RE = re.compile(
-    r"\bwilaya\s*(?:=|in)\s*\(?\s*'[^']*'",
-    re.IGNORECASE)
+# Detect inline numeric id lists — a sign the model ignored the subquery rule
+_INLINE_LOC_ID_RE = re.compile(
+    r"\blocation_id\s*in\s*\(\s*\d", re.IGNORECASE)
+# Detect the correct subquery pattern
+_SUBQUERY_LOC_RE = re.compile(
+    r"\blocation_id\s*in\s*\(\s*select", re.IGNORECASE)
+# Extract wilaya names used in any = / IN filter
+_WILAYA_EQ_RE = re.compile(
+    r"\bwilaya\s*=\s*'([^']*)'", re.IGNORECASE)
+_WILAYA_IN_CLAUSE_RE = re.compile(
+    r"\bwilaya\s+in\s*\(([^)]*)\)", re.IGNORECASE)
 
 
 def _build_alias_map(sql: str, schema) -> dict[str, str]:
@@ -101,17 +106,20 @@ def _build_alias_map(sql: str, schema) -> dict[str, str]:
 
 def consistency_check(sql: str, entities: dict, query: str = "",
                       schema=None) -> list[str]:
-    """Catch hallucinated columns, missing / extra wilaya commune ids, and
-    fragile name-string wilaya filters. Targeted: only `alias.column`
-    references are checked for column existence, so legitimate table names
-    and aliases stop tripping false positives."""
+    """Catch hallucinated columns and wilaya filter mistakes.
+
+    Two checks:
+    1. Alias.column hallucinations — any `alias.col` reference where `col`
+       does not exist in the table the alias points to.
+    2. Inline id lists — if the model wrote `location_id IN (1, 2, 3, ...)`
+       instead of the required subquery, flag it so the retry uses the
+       correct subquery pattern.
+    3. Non-canonical wilaya names — if the SQL contains `wilaya = 'X'` and X
+       does not match the canonical French spelling, flag it.
+    """
     issues: list[str] = []
     s = sql or ""
     requested_names = list((entities or {}).get("wilayas", []) or [])
-    ids_map: dict = (entities or {}).get("wilaya_ids_map", {}) or {}
-    all_requested_ids: set[int] = set()
-    for w in requested_names:
-        all_requested_ids.update(int(i) for i in ids_map.get(w, []))
 
     # 1. hallucinated columns: for every `alias.col` reference, the column
     #    must exist in the table the alias points to.
@@ -125,44 +133,33 @@ def consistency_check(sql: str, entities: dict, query: str = "",
                     issues.append(
                         f"column '{col}' does not exist in table '{table}'")
 
-    # 2. location_id parity. The reference knowledge gave the SLM, for each
-    #    requested wilaya, the FULL set of commune ids. The SQL's
-    #    location_id filter must cover that set exactly — missing ids
-    #    mean a partial wilaya aggregate.
-    sql_ids: set[int] = set()
-    for m in _LOCID_IN_RE.finditer(s):
-        for tok in m.group(1).split(","):
-            tok = tok.strip()
-            if tok.isdigit():
-                sql_ids.add(int(tok))
-
-    if all_requested_ids:
-        missing = sorted(all_requested_ids - sql_ids)
-        if missing:
-            preview = ", ".join(str(i) for i in missing[:6])
-            more = f" (+{len(missing) - 6} more)" if len(missing) > 6 else ""
-            issues.append(
-                f"query is missing {len(missing)} commune location_id(s) "
-                f"that belong to the requested wilaya(s): {preview}{more}")
-        extra = sorted(sql_ids - all_requested_ids)
-        if extra:
-            preview = ", ".join(str(i) for i in extra[:6])
-            issues.append(
-                f"query filters location_id(s) the user did not request: "
-                f"{preview}")
-    elif sql_ids and not requested_names:
+    # 2. inline location_id list — model should use a subquery, not hard-coded ids
+    if requested_names and _INLINE_LOC_ID_RE.search(s) and not _SUBQUERY_LOC_RE.search(s):
+        canon = ", ".join(f"'{w}'" for w in requested_names)
         issues.append(
-            "query filters by location_id but the user named no wilaya")
+            f"wilaya filter uses an inline location_id number list; "
+            f"use a subquery instead: WHERE <table>.location_id IN "
+            f"(SELECT location_id FROM dim_location WHERE wilaya IN ({canon}))")
 
-    # 3. wilaya-name filter is fragile — flag any `wilaya = 'X'` /
-    #    `wilaya IN ('X', ...)` filter when ids were available, so the SLM
-    #    is nudged back to id-based filtering.
-    if (_WILAYA_NAME_FILTER_RE.search(s) and all_requested_ids):
-        issues.append(
-            "wilaya filter uses a name string in WHERE; replace it with "
-            "`location_id IN (...)` using the ids from the reference knowledge")
+    # 3. non-canonical wilaya name — extract names the SQL uses in wilaya filters
+    if requested_names:
+        canonical_set = set(requested_names)
+        sql_wilaya_names: list[str] = []
+        for m in _WILAYA_EQ_RE.finditer(s):
+            sql_wilaya_names.append(m.group(1))
+        for m in _WILAYA_IN_CLAUSE_RE.finditer(s):
+            for part in m.group(1).split(","):
+                name = part.strip().strip("'").strip('"')
+                if name:
+                    sql_wilaya_names.append(name)
+        for name in sql_wilaya_names:
+            if name not in canonical_set:
+                issues.append(
+                    f"SQL uses wilaya name '{name}' but the canonical DB "
+                    f"spelling is {', '.join(repr(w) for w in requested_names)}. "
+                    f"Copy the canonical name exactly into the subquery.")
 
-    del query  # trend-vs-aggregate now left to the SLM, no rule check
+    del query  # shape decisions left to the SLM
     return issues
 
 
@@ -175,7 +172,6 @@ def correction_hint(issues: list[str], entities: dict,
     the SLM can reason from the truth instead of generic phrasing.
     """
     wilayas = (entities or {}).get("wilayas", []) or []
-    ids_map: dict = (entities or {}).get("wilaya_ids_map", {}) or {}
     parts: list[str] = []
 
     if exec_error:
@@ -183,38 +179,20 @@ def correction_hint(issues: list[str], entities: dict,
             f"The previous query was rejected by the database: {exec_error}. "
             f"Look up the column on its real table (the schema is above), "
             f"or split the query.")
-    if any("missing" in i and "location_id" in i for i in issues):
-        # surface the per-wilaya id lists so the SLM can copy them
-        id_lines = "; ".join(
-            f"{w}=({', '.join(str(i) for i in ids_map.get(w, []))})"
-            for w in wilayas if ids_map.get(w))
+    if any("inline location_id" in i for i in issues):
+        canon = ", ".join(f"'{w}'" for w in wilayas)
         parts.append(
-            f"You MUST include every commune id for each requested wilaya. "
-            f"Use: WHERE <table>.location_id IN (...) — the full id sets are "
-            f"{id_lines}.")
-    if any("the user did not request" in i for i in issues):
-        if wilayas:
-            id_lines = "; ".join(
-                f"{w}=({', '.join(str(i) for i in ids_map.get(w, []))})"
-                for w in wilayas if ids_map.get(w))
-            parts.append(
-                f"Filter location_id ONLY for these wilaya id sets: "
-                f"{id_lines}.")
-        else:
-            parts.append(
-                "Do NOT add any location_id filter — the user named no wilaya.")
-    if any("name string" in i for i in issues):
+            f"Do NOT list location_ids by hand. Use this subquery pattern: "
+            f"WHERE <table>.location_id IN "
+            f"(SELECT location_id FROM dim_location WHERE wilaya IN ({canon})).")
+    if any("canonical DB spelling" in i for i in issues):
+        canon = ", ".join(f"'{w}'" for w in wilayas)
         parts.append(
-            "Do NOT filter by wilaya name; use `location_id IN (...)` with "
-            "the integer ids from the reference knowledge.")
+            f"Use the exact canonical French wilaya spelling(s): {canon}. "
+            f"These go in: WHERE wilaya = '...' or WHERE wilaya IN (...).")
     if any("does not exist in table" in i for i in issues):
         bad = [i for i in issues if "does not exist in table" in i]
         parts.append("Fix the missing columns: " + "; ".join(bad) + ".")
-    if any("named no wilaya" in i for i in issues):
-        parts.append(
-            "Remove the location_id filter — the user did not name any wilaya.")
-    if any("week_start" in i for i in issues):
-        parts.append("GROUP BY week_start and ORDER BY week_start.")
     return " ".join(parts)
 
 
