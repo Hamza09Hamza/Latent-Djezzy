@@ -15,6 +15,14 @@ brain.encode_outcome() turns into the situation vector at run time. The
 final tick of every trace has label_continue=0: the seuil fires and the
 turn routes to the communicator.
 
+Key design:
+  - `_expand` generates ALL ticks for a trace (k=0..len(gold)).
+  - `_terminal` adds ONLY the final stopping-state row for a trace.
+    Used to add extra concentrated signal that the brain should STOP
+    once a terminal action (chart/email/template) has succeeded.
+    These rows have no corresponding continue=1 siblings, so they
+    directly increase the "stop" signal density for those patterns.
+
 This file IS the editable policy spec. Add a trace shape, retrain, and the
 brain learns the new behaviour. Swap the templates for real logged turns
 when you have them — that is what makes the policy genuinely dynamic.
@@ -91,6 +99,20 @@ _TEMPLATE_WRAP = ["{q} and put it in a report", "generate a report of {q}",
                   "fill the weekly report with {q}", "{q} as a report document"]
 _FOLLOWUPS = ["and for {w}?", "what about {w}", "how about {w}",
               "now {seg}", "same for {w}", "and {w}"]
+
+# Performance / executive-report queries — map to fpa_profitability + global_revenue
+_PERFORMANCE_QUERIES = [
+    "Q4 {t} performance summary", "Q3 {t} performance review",
+    "Q1 {t} results", "Q2 {t} business results",
+    "executive performance report {t}", "quarterly business results {t}",
+    "how did we do in Q3 {t}", "annual performance review {t}",
+    "H1 {t} financial results", "H2 {t} performance",
+    "company performance {t}", "give me the quarterly KPI summary {t}",
+    "financial summary {t}", "business performance overview {t}",
+    "year-to-date financial results", "half-year performance report",
+    "what were our results {t}", "overall company results {t}",
+    "key financial metrics {t}", "show me the financial highlights {t}",
+]
 
 
 def _kpi_terms() -> list[str]:
@@ -198,6 +220,27 @@ def _expand(out: list[dict], intent: str, query: str, history: str,
         out.append(row)
 
 
+def _terminal(out: list[dict], intent: str, query: str, history: str,
+              done_seq: list[dict]) -> None:
+    """Add ONLY the terminal stopping-state row for a completed sequence.
+
+    Unlike _expand (which generates all k=0..len(gold) ticks), this adds
+    just the k=len(done_seq) row with label_continue=0. These concentrated
+    stop-signal rows teach the brain to halt after a terminal action
+    succeeds, without adding extra 'go' rows for the intermediate steps.
+    """
+    query = _norm(query)
+    if not query:
+        return
+    out.append({
+        "query": query, "history": history, "intent": intent,
+        "step_log": done_seq,
+        "grounding": round(_grounding_at(done_seq), 3),
+        "label_action": None,
+        "label_continue": 0,
+    })
+
+
 # ── dataset ──────────────────────────────────────────────────────────────
 def build_dataset(seed: int = 0) -> list[dict]:
     rng = random.Random(seed)
@@ -281,6 +324,58 @@ def build_dataset(seed: int = 0) -> list[dict]:
         prev = pick()
         _expand(rows, "data", _fill(rng.choice(_FOLLOWUPS), kpis, rng),
                 f"Earlier question: {prev}", [_rag(), _sql_ok()])
+
+    # ── performance / executive-report traces ────────────────────────────
+    # These map broad "Q4 performance", "quarterly results" etc. to the
+    # fpa_profitability + global_revenue tables. The gold sequence is
+    # rag → sql → template (a performance question deserves a report).
+    for _ in range(180):
+        pt = rng.choice(_PERFORMANCE_QUERIES)
+        q = _norm(pt.format(t=rng.choice(_TIMES), w=rng.choice(_WILAYAS),
+                            kpi="performance", seg="", fake=""))
+        _expand(rows, "data", q, "", [_rag(), _sql_ok(), _template()])
+    # some performance queries just want the numbers (no report)
+    for _ in range(80):
+        pt = rng.choice(_PERFORMANCE_QUERIES)
+        q = _norm(pt.format(t=rng.choice(_TIMES), w=rng.choice(_WILAYAS),
+                            kpi="performance", seg="", fake=""))
+        _expand(rows, "data", q, "", [_rag(), _sql_ok()])
+
+    # ── terminal-stop augmentation ───────────────────────────────────────
+    # These are ONLY the final stopping-state rows — no intermediate ticks.
+    # They directly increase the density of "I'm done, stop here" training
+    # signal for the three terminal actions, correcting the repeat-action bug
+    # where the brain kept picking chart/email/template a second time.
+
+    # chart done → stop
+    for _ in range(400):
+        q = rng.choice(_VIZ_WRAP).format(q=pick())
+        _terminal(rows, "data", q, "", [_rag(), _sql_ok(), _chart(ok=True)])
+
+    # email done → stop
+    for _ in range(300):
+        q = rng.choice(_EMAIL_WRAP).format(q=pick())
+        _terminal(rows, "data", q, "", [_rag(), _sql_ok(), _email(ok=True)])
+
+    # template done → stop
+    for _ in range(300):
+        q = rng.choice(_TEMPLATE_WRAP).format(q=pick())
+        _terminal(rows, "data", q, "", [_rag(), _sql_ok(), _template(ok=True)])
+
+    # chart + email done (multi-capability terminal) → stop
+    for _ in range(150):
+        q = rng.choice(_EMAIL_WRAP).format(
+            q=rng.choice(_VIZ_WRAP).format(q=pick()))
+        _terminal(rows, "data", q, "",
+                  [_rag(), _sql_ok(), _chart(ok=True), _email(ok=True)])
+
+    # performance report done → stop
+    for _ in range(200):
+        pt = rng.choice(_PERFORMANCE_QUERIES)
+        q = _norm(pt.format(t=rng.choice(_TIMES), w=rng.choice(_WILAYAS),
+                            kpi="performance", seg="", fake=""))
+        _terminal(rows, "data", q, "",
+                  [_rag(), _sql_ok(), _template(ok=True)])
 
     rng.shuffle(rows)
     return rows

@@ -194,7 +194,24 @@ def route_after_brain(state: dict) -> str:
     if conf < V6Config.BRAIN_CONF_MIN:
         return "communicator"
     action = state.get("next_action", "")
-    return action if action in _ACTIONS else "communicator"
+    if action not in _ACTIONS:
+        return "communicator"
+
+    # Safety: never repeat a terminal action that already succeeded.
+    # Terminal actions (chart / email / template) produce artifacts — running
+    # one twice just duplicates the file. The brain handles this via training
+    # (terminal-stop augmentation in brain_data.py), but this guard catches
+    # any residual misfires until the model is fully converged.
+    _TERMINAL = {"chart", "email", "template"}
+    if action in _TERMINAL:
+        step_log = state.get("step_log", [])
+        already_done = any(
+            s.get("action") == action and s.get("ok", False)
+            for s in step_log)
+        if already_done:
+            return "communicator"
+
+    return action
 
 
 # ── rag ──────────────────────────────────────────────────────────────────

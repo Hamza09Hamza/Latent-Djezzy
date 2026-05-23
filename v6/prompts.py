@@ -84,7 +84,16 @@ User question: what is the fpa_quantum_score
 {"intent": "unanswerable", "tables": [], "columns": [], "filters": {"wilayas": [], "segment": null, "time": null}, "notes": "fpa_quantum_score is not in the schema"}
 
 User question: what is the satellite coverage ratio for Oran
-{"intent": "unanswerable", "tables": [], "columns": [], "filters": {"wilayas": [], "segment": null, "time": null}, "notes": "satellite coverage ratio is not a column in any table in the schema"}"""
+{"intent": "unanswerable", "tables": [], "columns": [], "filters": {"wilayas": [], "segment": null, "time": null}, "notes": "satellite coverage ratio is not a column in any table in the schema"}
+
+User question: Q4 2025 performance summary
+{"intent": "data", "tables": ["fpa_profitability", "global_revenue"], "columns": ["ebitda", "total_revenue", "net_income", "ebitda_margin"], "filters": {"wilayas": [], "segment": null, "time": "Q4 2025"}, "notes": "broad performance query maps to fpa_profitability (ebitda, margins) and global_revenue (total_revenue); no wilaya filter — company-wide"}
+
+User question: how is our OPEX and CAPEX this year
+{"intent": "data", "tables": ["opex_capex"], "columns": ["total_opex", "capex_total", "ratio_opex_to_revenue"], "filters": {"wilayas": [], "segment": null, "time": "this year"}, "notes": "expenditure query maps to opex_capex; no wilaya filter"}
+
+User question: executive report for Q3
+{"intent": "data", "tables": ["fpa_profitability", "global_revenue"], "columns": ["ebitda", "ebitda_margin", "total_revenue", "net_income"], "filters": {"wilayas": [], "segment": null, "time": "Q3"}, "notes": "executive/performance report maps to fpa_profitability + global_revenue for the key financial KPIs"}"""
 
 _SQLGEN_BASE = """PHASE 2 - SQL GENERATION.
 

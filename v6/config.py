@@ -57,7 +57,7 @@ class V6Config:
         "qwen2.5-coder-0.5b-instruct",
     ]
     SLM_OVERRIDE   = _env("SLM_OVERRIDE")          # force a Hub model id
-    SLM_HUB_ID     = "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+    SLM_HUB_ID     = "Qwen/Qwen2.5-Coder-3B-Instruct"
     USE_4BIT         = _env("4BIT", "0") == "1"      # 4-bit NF4 quantization
     USE_SPECULATIVE  = _env("SPECULATIVE", "1") == "1"  # 0.5B drafter → 2-4x speed
 

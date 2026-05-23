@@ -94,8 +94,8 @@ def _load_wilaya_aliases() -> dict:
 
 
 def _build_wilaya_chunks() -> list[dict]:
-    """One chunk per wilaya — canonical name, aliases, commune count, and the
-    correct subquery pattern to use in SQL.
+    """One chunk per wilaya — canonical name, wilaya code, aliases, commune
+    count, and the correct subquery pattern to use in SQL.
 
     `dim_location` is commune-level (~25 communes per wilaya). Rather than
     listing every commune id in the chunk text (which would make the SQL IN
@@ -106,31 +106,39 @@ def _build_wilaya_chunks() -> list[dict]:
             SELECT location_id FROM dim_location WHERE wilaya = '<canonical>'
         )
 
-    This works for any commune count, keeps SQL short, and is still
-    knowledge-driven: the canonical French name comes from the RAG chunk.
+    The wilaya_code (Algeria's official numeric code, e.g. 16 for Alger) is
+    included so the model can handle queries like "wilaya 16" or "W-31" and
+    map them to the canonical French name for the subquery.
     """
     chunks: list[dict] = []
     aliases = _load_wilaya_aliases()
     try:
         conn = db_connect()
         cur = conn.cursor()
-        cur.execute("SELECT wilaya, location_id FROM dim_location "
+        cur.execute("SELECT wilaya, wilaya_code, location_id FROM dim_location "
                     "WHERE wilaya IS NOT NULL "
                     "ORDER BY wilaya, location_id")
-        wilaya_ids: dict[str, list[int]] = {}
-        for wilaya, loc_id in cur.fetchall():
-            wilaya_ids.setdefault(wilaya, []).append(int(loc_id))
+        wilaya_data: dict[str, dict] = {}
+        for wilaya, code, loc_id in cur.fetchall():
+            if wilaya not in wilaya_data:
+                wilaya_data[wilaya] = {
+                    "code": int(code) if code is not None else None,
+                    "location_ids": [],
+                }
+            wilaya_data[wilaya]["location_ids"].append(int(loc_id))
         conn.close()
     except Exception:  # noqa: BLE001 — db unavailable degrades to empty
         return chunks
-    for wilaya, ids in wilaya_ids.items():
+    for wilaya, data in wilaya_data.items():
+        ids = data["location_ids"]
         alts = aliases.get(wilaya, [])
         alt_str = (f" Aliases: {', '.join(alts)}." if alts else "")
+        code_str = (f" Wilaya code: {data['code']}." if data.get("code") is not None else "")
         chunks.append({
             "kind": "wilaya",
             "wilaya": wilaya,
             "location_ids": ids,          # kept for entity resolver; not in text
-            "text": (f"Wilaya '{wilaya}' (canonical French spelling).{alt_str} "
+            "text": (f"Wilaya '{wilaya}' (canonical French spelling).{code_str}{alt_str} "
                      f"Covers {len(ids)} commune(s). "
                      f"To filter SQL for the whole wilaya use a subquery: "
                      f"WHERE <table>.location_id IN "
@@ -162,17 +170,21 @@ def build_chunks() -> list[dict]:
     # wilaya identities — one chunk per wilaya with location_id
     chunks.extend(_build_wilaya_chunks())
 
-    # kpi_catalog.json — multilingual synonyms
+    # kpi_catalog.json — multilingual synonyms + use-case query patterns
     if os.path.isfile(V6Config.KPI_CATALOG_PATH):
         for e in _load_json(V6Config.KPI_CATALOG_PATH):
             syn = ", ".join(e.get("synonyms", []))
+            use_cases = e.get("use_cases", [])
+            use_case_str = (f" Use when asked about: {', '.join(use_cases)}."
+                            if use_cases else "")
             chunks.append({
                 "kind": "kpi", "table": e["table"], "column": e["column"],
                 "text": (f"KPI '{e['column']}' in table {e['table']} "
                          f"(segment {e.get('segment', '-')}, unit "
                          f"{e.get('unit', '-')}). "
                          f"{e.get('description', '').rstrip('.')}. "
-                         f"Also called: {syn}."),
+                         f"Also called: {syn}."
+                         f"{use_case_str}"),
             })
 
     # glossary.json — definitions, business context, relationships

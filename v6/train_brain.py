@@ -128,4 +128,9 @@ def main(epochs: int = 160, lr: float = 1e-3, val_frac: float = 0.15) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--epochs", type=int, default=160)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    args = ap.parse_args()
+    main(epochs=args.epochs, lr=args.lr)

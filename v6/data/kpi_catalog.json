@@ -114,7 +114,8 @@
     "description": "Overall company total revenue",
     "segment": "global",
     "unit": "DZD",
-    "synonyms": ["total revenue", "company revenue", "global revenue", "recettes", "مجموع الإيرادات", "chiffre d'affaires"]
+    "synonyms": ["total revenue", "company revenue", "global revenue", "recettes", "مجموع الإيرادات", "chiffre d'affaires"],
+    "use_cases": ["quarterly revenue", "annual results", "company performance", "revenue summary", "business results", "top-line performance", "Q1 Q2 Q3 Q4 revenue"]
   },
   {
     "id": 14,
@@ -159,7 +160,8 @@
     "description": "Overall market share",
     "segment": "global",
     "unit": "%",
-    "synonyms": ["market share", "total share", "part de marché"]
+    "synonyms": ["market share", "total share", "part de marché"],
+    "use_cases": ["market position", "competitive share", "company market share", "overall share"]
   },
   {
     "id": 19,
@@ -222,7 +224,8 @@
     "description": "EBITDA — Earnings Before Interest, Taxes, Depreciation and Amortization, the standard operating profit measure",
     "segment": "all",
     "unit": "DZD",
-    "synonyms": ["EBITDA", "operating profit", "operating earnings", "operating income"]
+    "synonyms": ["EBITDA", "operating profit", "operating earnings", "operating income"],
+    "use_cases": ["quarterly performance", "Q1 Q2 Q3 Q4 performance", "executive summary", "executive report", "profitability review", "annual results", "financial results", "half-year performance", "business performance summary", "how did we do", "performance overview"]
   },
   {
     "id": 26,
@@ -231,7 +234,8 @@
     "description": "EBITDA margin as percentage of total revenue",
     "segment": "all",
     "unit": "%",
-    "synonyms": ["EBITDA margin", "marge EBITDA", "operating margin", "EBITDA percent"]
+    "synonyms": ["EBITDA margin", "marge EBITDA", "operating margin", "EBITDA percent"],
+    "use_cases": ["profitability", "operating margins", "performance report", "financial efficiency", "quarterly margins"]
   },
   {
     "id": 27,
@@ -240,7 +244,8 @@
     "description": "EBIT — Earnings Before Interest and Taxes (operating income)",
     "segment": "all",
     "unit": "DZD",
-    "synonyms": ["EBIT", "operating income", "earnings before interest and taxes"]
+    "synonyms": ["EBIT", "operating income", "earnings before interest and taxes"],
+    "use_cases": ["operating results", "quarterly performance", "profitability analysis"]
   },
   {
     "id": 28,
@@ -249,7 +254,8 @@
     "description": "Net Income — bottom line profit after taxes and interest",
     "segment": "all",
     "unit": "DZD",
-    "synonyms": ["net income", "net profit", "résultat net", "bottom line", "net earnings"]
+    "synonyms": ["net income", "net profit", "résultat net", "bottom line", "net earnings"],
+    "use_cases": ["bottom line results", "net profit review", "quarterly results", "annual profitability", "financial performance"]
   },
   {
     "id": 29,
@@ -258,7 +264,8 @@
     "description": "Gross margin — revenue minus direct cost of service",
     "segment": "all",
     "unit": "%",
-    "synonyms": ["gross margin", "marge brute", "gross profit margin"]
+    "synonyms": ["gross margin", "marge brute", "gross profit margin"],
+    "use_cases": ["gross profitability", "margin analysis", "cost efficiency"]
   },
   {
     "id": 30,
@@ -267,7 +274,8 @@
     "description": "Operating Cash Flow generated from core business operations",
     "segment": "all",
     "unit": "DZD",
-    "synonyms": ["OCF", "operating cash flow", "cash flow operations", "cash-flow opérationnel"]
+    "synonyms": ["OCF", "operating cash flow", "cash flow operations", "cash-flow opérationnel"],
+    "use_cases": ["cash flow analysis", "liquidity review", "quarterly cash performance"]
   },
   {
     "id": 31,
@@ -276,7 +284,8 @@
     "description": "Free Cash Flow — operating cash flow minus capital expenditure",
     "segment": "all",
     "unit": "DZD",
-    "synonyms": ["FCF", "free cash flow", "free cash-flow"]
+    "synonyms": ["FCF", "free cash flow", "free cash-flow"],
+    "use_cases": ["free cash flow analysis", "capital efficiency", "cash generation"]
   },
   {
     "id": 32,
@@ -285,7 +294,8 @@
     "description": "Global ARPU across all subscriber segments combined",
     "segment": "all",
     "unit": "DZD",
-    "synonyms": ["ARPU global", "company ARPU", "blended ARPU", "ARPU total"]
+    "synonyms": ["ARPU global", "company ARPU", "blended ARPU", "ARPU total"],
+    "use_cases": ["company-wide ARPU", "overall efficiency", "blended revenue per user", "global per-user metrics"]
   },
   {
     "id": 33,
@@ -294,7 +304,8 @@
     "description": "Total Operating Expenditure across all functional areas",
     "segment": "all",
     "unit": "DZD",
-    "synonyms": ["OPEX", "operating expenditure", "operating expenses", "total OPEX", "opérations"]
+    "synonyms": ["OPEX", "operating expenditure", "operating expenses", "total OPEX", "opérations"],
+    "use_cases": ["quarterly OPEX", "cost review", "expenditure analysis", "operating costs", "cost performance", "quarterly costs"]
   },
   {
     "id": 34,
@@ -303,7 +314,8 @@
     "description": "Total Capital Expenditure — investment in long-term assets like network and IT",
     "segment": "all",
     "unit": "DZD",
-    "synonyms": ["CAPEX", "capital expenditure", "capital investment", "total CAPEX", "investissement"]
+    "synonyms": ["CAPEX", "capital expenditure", "capital investment", "total CAPEX", "investissement"],
+    "use_cases": ["quarterly CAPEX", "investment review", "capital spending", "network investment", "capital performance"]
   },
   {
     "id": 35,
