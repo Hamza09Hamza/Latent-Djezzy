@@ -136,12 +136,23 @@ class DualRoleSLM:
         # thread_id → phase-1 result (sequences + KV cache) for the hand-off
         self._store: dict[str, dict] = {}
         self.model_id = model_id
+        # Qwen3 models have thinking mode on by default — disable it everywhere
+        # by passing enable_thinking=False to apply_chat_template.
+        self._qwen3 = "qwen3" in model_id.lower()
+
+    # ── chat-template helper ─────────────────────────────────────────────
+    def _tmpl(self, messages: list[dict], **kw) -> str:
+        """Apply the chat template. For Qwen3 disables thinking mode so the
+        model outputs directly instead of reasoning aloud first."""
+        if self._qwen3:
+            kw.setdefault("enable_thinking", False)
+        return self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, **kw)
 
     # ── single-turn chat (used by the direct-answer node) ────────────────
     @torch.no_grad()
     def chat(self, messages: list[dict], max_new_tokens: int = 256) -> str:
-        text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True)
+        text = self._tmpl(messages)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)
         gen_kw = dict(**enc, max_new_tokens=max_new_tokens, do_sample=False,
                       pad_token_id=self.tokenizer.eos_token_id)
@@ -161,8 +172,7 @@ class DualRoleSLM:
         """Run the router and stash its KV cache for the phase-2 hand-off."""
         max_new = max_new or V6Config.ROUTER_MAX_NEW_TOKENS
         t0 = time.time()
-        text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True)
+        text = self._tmpl(messages)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)
         gen_kw: dict = dict(
             **enc, max_new_tokens=max_new, do_sample=False,
@@ -170,8 +180,9 @@ class DualRoleSLM:
             pad_token_id=self.tokenizer.eos_token_id)
         if self._draft is not None:
             gen_kw["assistant_model"] = self._draft  # speculative decoding
-            gen_kw["tokenizer"] = self.tokenizer
-            gen_kw["assistant_tokenizer"] = self._draft_tokenizer
+            if self._draft_tokenizer is not None:   # different vocab → need both
+                gen_kw["tokenizer"] = self.tokenizer
+                gen_kw["assistant_tokenizer"] = self._draft_tokenizer
         out1 = self.model.generate(**gen_kw)
         router_out = self.tokenizer.decode(
             out1.sequences[0, enc.input_ids.shape[1]:],
@@ -244,8 +255,7 @@ class DualRoleSLM:
     def stream_generate(self, messages: list[dict], max_new_tokens: int = 512):
         """Yield decoded tokens one by one as the model generates them."""
         from transformers import TextIteratorStreamer
-        text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True)
+        text = self._tmpl(messages)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)
         streamer = TextIteratorStreamer(
             self.tokenizer, skip_prompt=True, skip_special_tokens=True)
@@ -305,8 +315,7 @@ class DualRoleSLM:
             {"role": "assistant", "content": router_out},
             {"role": "user", "content": instruction},
         ]
-        text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True)
+        text = self._tmpl(messages)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)
         gen_kw: dict = dict(
             **enc, max_new_tokens=max_new, do_sample=False,
