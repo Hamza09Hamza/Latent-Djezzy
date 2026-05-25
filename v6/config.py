@@ -52,15 +52,20 @@ class V6Config:
     # Router and SQL generator share weights; that is what makes the
     # KV-cache hand-off (latent communication) valid.
     #
-    # Size toggle:
-    #   V6_SLM_SIZE=3b (default) → Qwen2.5-Coder-3B-Instruct
-    #   V6_SLM_SIZE=7b           → Qwen2.5-Coder-7B-Instruct (better SQL,
-    #                              needs 4-bit on T4: V6_4BIT=1)
-    SLM_SIZE = _env("SLM_SIZE", "3b").lower()
+    # Size toggle (V6_SLM_SIZE):
+    #   "3b" → Qwen2.5-Coder-3B-Instruct  (~6.4 GB fp16) — safe baseline
+    #   "4b" → Qwen3-4B                    (~8.0 GB fp16) — best SQL in class,
+    #           recommended default for L4/A100; drafter = Qwen3-0.6B
+    #   "7b" → Qwen2.5-Coder-7B-Instruct  (~14 GB fp16)  — needs V6_4BIT=1
+    SLM_SIZE = _env("SLM_SIZE", "4b").lower()
     SLM_CANDIDATES_3B = [
         "qwen2.5-coder-3b-instruct",
         "qwen2.5-coder-1.5b-instruct",
         "qwen2.5-coder-0.5b-instruct",
+    ]
+    SLM_CANDIDATES_4B = [
+        "qwen3-4b",
+        "qwen2.5-coder-3b-instruct",   # fallback if 4B not cached
     ]
     SLM_CANDIDATES_7B = [
         "qwen2.5-coder-7b-instruct",
@@ -68,9 +73,10 @@ class V6Config:
     ]
     SLM_OVERRIDE   = _env("SLM_OVERRIDE")          # force a Hub model id
     SLM_HUB_ID_3B  = "Qwen/Qwen2.5-Coder-3B-Instruct"
+    SLM_HUB_ID_4B  = "Qwen/Qwen3-4B"
     SLM_HUB_ID_7B  = "Qwen/Qwen2.5-Coder-7B-Instruct"
     USE_4BIT         = _env("4BIT", "0") == "1"      # 4-bit NF4 quantization
-    USE_SPECULATIVE  = _env("SPECULATIVE", "1") == "1"  # 0.5B drafter → 2-4x speed
+    USE_SPECULATIVE  = _env("SPECULATIVE", "1") == "1"  # drafter → 2-4x speed
 
     ROUTER_MAX_NEW_TOKENS = 128   # routing JSON rarely exceeds 80 tokens
     SQLGEN_MAX_NEW_TOKENS = 256   # unconstrained fallback ceiling
@@ -152,28 +158,40 @@ class V6Config:
     @classmethod
     def slm_id(cls) -> str:
         """Override → first local model dir that exists → Hub id.
-        Honors V6_SLM_SIZE=3b|7b (default 3b)."""
+        Honors V6_SLM_SIZE=3b|4b|7b (default 4b)."""
         if cls.SLM_OVERRIDE:
             return cls.SLM_OVERRIDE
-        candidates = (cls.SLM_CANDIDATES_7B if cls.SLM_SIZE == "7b"
-                      else cls.SLM_CANDIDATES_3B)
+        if cls.SLM_SIZE == "7b":
+            candidates, hub = cls.SLM_CANDIDATES_7B, cls.SLM_HUB_ID_7B
+        elif cls.SLM_SIZE == "4b":
+            candidates, hub = cls.SLM_CANDIDATES_4B, cls.SLM_HUB_ID_4B
+        else:
+            candidates, hub = cls.SLM_CANDIDATES_3B, cls.SLM_HUB_ID_3B
         for name in candidates:
             path = os.path.join(cls.MODELS_DIR, name)
             if os.path.isdir(path):
                 return path
-        return (cls.SLM_HUB_ID_7B if cls.SLM_SIZE == "7b"
-                else cls.SLM_HUB_ID_3B)
+        return hub
 
     @classmethod
     def draft_slm_id(cls, main_id: str) -> str | None:
-        """Return the speculative-decoding drafter id for the given main model.
+        """Return the speculative-decoding drafter for the given main model.
 
-        If the main model is the 0.5B, no drafter is needed (it IS the drafter).
-        Otherwise return the 0.5B Hub id so the verifier can use it.
+        Qwen3 models (qwen3-*) use Qwen3-0.6B as their drafter — same
+        architecture family, same tokenizer, best speculation quality.
+        Qwen2.5 models fall back to Qwen2.5-Coder-0.5B.
+        Returns None when the main model IS the smallest available drafter.
         """
-        if "0.5b" in main_id.lower():
-            return None
-        # prefer a local copy if present
+        m = main_id.lower()
+        if "0.5b" in m or "0.6b" in m:
+            return None   # already the drafter — no smaller model to speculate with
+
+        # Qwen3 family → use Qwen3-0.6B (same architecture + tokenizer)
+        if "qwen3" in m:
+            local = os.path.join(cls.MODELS_DIR, "qwen3-0.6b")
+            return local if os.path.isdir(local) else "Qwen/Qwen3-0.6B"
+
+        # Qwen2.5-Coder → use Qwen2.5-Coder-0.5B
         for name in cls.SLM_CANDIDATES_3B:
             if "0.5b" in name:
                 path = os.path.join(cls.MODELS_DIR, name)
