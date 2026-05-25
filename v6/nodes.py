@@ -83,7 +83,14 @@ def _compact_turns(turns: list[dict]) -> str:
 
 def _history_text(turns: list[dict], memory_summary: str = "",
                   limit: int = _MAX_RAW_TURNS) -> str:
-    """Recent raw turns + compacted older memory, for prompts and the brain."""
+    """Recent raw turns + compacted older memory, for prompts and the brain.
+
+    For each prior data turn we also surface the schema mapping the router
+    chose (tables + columns), so a short follow-up like "and for Tiaret?"
+    has the columns visible for RULE 5 inheritance in the router prompt.
+    Without this the router sees only the Q+A snippet and cannot tell
+    which KPI to inherit.
+    """
     if not turns and not memory_summary:
         return ""
     lines: list[str] = []
@@ -91,8 +98,15 @@ def _history_text(turns: list[dict], memory_summary: str = "",
         lines.append(f"[Earlier context]\n{memory_summary}")
     for i, t in enumerate(turns[-limit:], 1):
         lines.append(f"{i}. Q: {t.get('query', '')}")
-        if t.get("intent") == "data" and t.get("answer"):
-            lines.append(f"   A: {t.get('answer', '')[:100]}")
+        if t.get("intent") == "data":
+            tables = t.get("tables") or []
+            cols = t.get("columns") or []
+            if tables:
+                lines.append(f"   tables: {tables}")
+            if cols:
+                lines.append(f"   columns: {cols}")
+            if t.get("answer"):
+                lines.append(f"   A: {t.get('answer', '')[:100]}")
     return "\n".join(lines)
 
 

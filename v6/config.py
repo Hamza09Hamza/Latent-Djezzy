@@ -51,19 +51,37 @@ class V6Config:
     # ── SLM — one model, two roles ───────────────────────────────────────
     # Router and SQL generator share weights; that is what makes the
     # KV-cache hand-off (latent communication) valid.
-    SLM_CANDIDATES = [
+    #
+    # Size toggle:
+    #   V6_SLM_SIZE=3b (default) → Qwen2.5-Coder-3B-Instruct
+    #   V6_SLM_SIZE=7b           → Qwen2.5-Coder-7B-Instruct (better SQL,
+    #                              needs 4-bit on T4: V6_4BIT=1)
+    SLM_SIZE = _env("SLM_SIZE", "3b").lower()
+    SLM_CANDIDATES_3B = [
         "qwen2.5-coder-3b-instruct",
         "qwen2.5-coder-1.5b-instruct",
         "qwen2.5-coder-0.5b-instruct",
     ]
+    SLM_CANDIDATES_7B = [
+        "qwen2.5-coder-7b-instruct",
+        "qwen2.5-coder-3b-instruct",
+    ]
     SLM_OVERRIDE   = _env("SLM_OVERRIDE")          # force a Hub model id
-    SLM_HUB_ID     = "Qwen/Qwen2.5-Coder-3B-Instruct"
+    SLM_HUB_ID_3B  = "Qwen/Qwen2.5-Coder-3B-Instruct"
+    SLM_HUB_ID_7B  = "Qwen/Qwen2.5-Coder-7B-Instruct"
     USE_4BIT         = _env("4BIT", "0") == "1"      # 4-bit NF4 quantization
     USE_SPECULATIVE  = _env("SPECULATIVE", "1") == "1"  # 0.5B drafter → 2-4x speed
 
     ROUTER_MAX_NEW_TOKENS = 128   # routing JSON rarely exceeds 80 tokens
     SQLGEN_MAX_NEW_TOKENS = 256   # unconstrained fallback ceiling
     SQLGEN_CONSTRAINED_MAX_NEW_TOKENS = 150  # constrained: pure SQL fits in ~110-130 tokens
+
+    # ── Polisher — small natural-language refiner ────────────────────────
+    # Qwen2.5-1.5B-Instruct: small (~1.5 GB fp16) but produces noticeably
+    # more natural prose than the 0.5B and stays cheap on T4. The polisher
+    # never invents numbers — it rewords the raw data summary.
+    POLISHER_HUB_ID = _env("POLISHER_HUB_ID", "Qwen/Qwen2.5-1.5B-Instruct")
+    POLISHER_MAX_NEW_TOKENS = int(_env("POLISHER_MAX_NEW", "180"))
 
     # ── Constrained SQL decoding (lm-format-enforcer) ────────────────────
     # When ON: a grammar processor masks non-SQL tokens at every generation
@@ -133,14 +151,18 @@ class V6Config:
 
     @classmethod
     def slm_id(cls) -> str:
-        """Override → first local model dir that exists → Hub id."""
+        """Override → first local model dir that exists → Hub id.
+        Honors V6_SLM_SIZE=3b|7b (default 3b)."""
         if cls.SLM_OVERRIDE:
             return cls.SLM_OVERRIDE
-        for name in cls.SLM_CANDIDATES:
+        candidates = (cls.SLM_CANDIDATES_7B if cls.SLM_SIZE == "7b"
+                      else cls.SLM_CANDIDATES_3B)
+        for name in candidates:
             path = os.path.join(cls.MODELS_DIR, name)
             if os.path.isdir(path):
                 return path
-        return cls.SLM_HUB_ID
+        return (cls.SLM_HUB_ID_7B if cls.SLM_SIZE == "7b"
+                else cls.SLM_HUB_ID_3B)
 
     @classmethod
     def draft_slm_id(cls, main_id: str) -> str | None:
@@ -152,7 +174,7 @@ class V6Config:
         if "0.5b" in main_id.lower():
             return None
         # prefer a local copy if present
-        for name in cls.SLM_CANDIDATES:
+        for name in cls.SLM_CANDIDATES_3B:
             if "0.5b" in name:
                 path = os.path.join(cls.MODELS_DIR, name)
                 if os.path.isdir(path):

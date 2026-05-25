@@ -18,7 +18,6 @@ data queries; greeting / meta / definition / unanswerable never reach it.
 """
 
 from __future__ import annotations
-import re
 
 from .config import V6Config
 
@@ -30,27 +29,17 @@ def _last_data_turn(turns: list[dict]) -> dict | None:
     return None
 
 
-def _is_implicit_followup(query: str, valid_cols: list[str],
-                          valid_tables: list[str], schema) -> bool:
-    """True when the query is so short and KPI-free that it's almost certainly
-    a follow-up like 'and for Constantine?' or 'what about Oran?'.
-
-    "KPI-free" is decided from the schema: a real metric column is one that
-    appears as numeric in some metric table. No hand-curated structural list.
-    """
-    words = re.sub(r"[^\w\s]", " ", query or "").split()
-    numeric_in_scope: set[str] = set()
-    for t in valid_tables:
-        if schema is not None and schema.has_table(t):
-            numeric_in_scope.update(schema.numeric_columns(t))
-    metric_cols = [c for c in valid_cols if c in numeric_in_scope]
-    return len(words) <= 6 and not metric_cols
-
-
 def assemble(query: str, routing: dict, capabilities: list[str],
              followup: bool, grounding: float, turns: list[dict],
              schema) -> dict:
-    """Validate the router's schema mapping and build the final data plan."""
+    """Validate the router's schema mapping and build the final data plan.
+
+    Follow-up detection is the router's responsibility (RULE 5 in its
+    system prompt). Here we only fall back to inheriting tables/columns
+    when the router returned nothing schema-valid — a structural rescue,
+    not a heuristic on the query text.
+    """
+    del query  # kept for API stability; not inspected here anymore
     trace: list[str] = []
     caps = list(capabilities or [])
 
@@ -65,14 +54,13 @@ def assemble(query: str, routing: dict, capabilities: list[str],
     if invalid_cols:
         trace.append(f"dropped unknown columns {invalid_cols}")
 
-    # follow-up: inherit tables / columns from the last data turn.
-    # Fire when (a) no valid tables at all, OR (b) the query is short and
-    # the router produced only non-metric columns — a sign it grabbed the
-    # wrong table to fill in a follow-up like "and for Constantine?".
+    # Structural rescue: if the router gave us no valid tables at all
+    # (or only non-metric ones), pull tables+columns from the last data
+    # turn. We do NOT inspect the query text — the router's prompt is
+    # the only place follow-ups are decided.
     inherited = False
-    force_inherit = _is_implicit_followup(query, valid_cols,
-                                          valid_tables, schema)
-    if not valid_tables or force_inherit:
+    metric_valid = [t for t in valid_tables if t != "dim_location"]
+    if not metric_valid:
         last = _last_data_turn(turns)
         if last:
             inherited_tables = [t for t in last.get("tables", [])
@@ -81,8 +69,7 @@ def assemble(query: str, routing: dict, capabilities: list[str],
                 valid_tables = inherited_tables
                 valid_cols = list(last.get("columns", []))
                 inherited = True
-                trace.append(f"inherited tables from memory {valid_tables}"
-                             + (" (implicit follow-up)" if force_inherit else ""))
+                trace.append(f"inherited tables from memory {valid_tables}")
     elif followup:
         trace.append("follow-up detected")
 

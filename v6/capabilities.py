@@ -15,6 +15,7 @@ capability nodes call:
 
 from __future__ import annotations
 import datetime
+import json
 import os
 import re
 
@@ -168,27 +169,115 @@ def load_contacts() -> list[dict]:
         return []
 
 
-def resolve_recipient(query: str, contacts: list[dict]) -> tuple[dict | None, list[dict]]:
-    """Best-matching contact for the query, plus all scored candidates."""
-    q = (query or "").lower()
-    scored: list[tuple[int, dict]] = []
-    for c in contacts:
-        score = 0
-        for part in (c.get("name") or "").lower().split():
-            if len(part) > 2 and part in q:
-                score += 3
-        role = (c.get("role") or "").lower()
-        dept = (c.get("department") or "").lower()
-        if role and role in q:
-            score += 2
-        if dept and dept in q:
-            score += 2
-        if score:
-            scored.append((score, c))
-    scored.sort(key=lambda x: -x[0])
-    if not scored:
+_RECIPIENT_SYSTEM = """You match an email-sending request to a contact.
+You receive (1) the user's request and (2) the contact list (JSON). Pick
+the SINGLE contact that best fits the request based on the recipient
+description (name, role, or department), or none if no contact matches.
+
+OUTPUT CONTRACT — reply with ONE JSON object only, nothing else:
+  {"contact_id": <id>|null, "reason": "<one short sentence>"}
+
+Rules:
+- Read the request carefully. The recipient may be named, given by role
+  ("the finance director", "head of operations"), or by department
+  ("the marketing team lead", "someone in HR").
+- Prefer the contact whose role/department best matches the intent. If
+  the request names a person ("send to Sarah") match that name.
+- If the request gives NO recipient phrase ("email it", "send it"),
+  return contact_id=null.
+- If no contact reasonably fits the description, return contact_id=null.
+- NEVER invent an id that is not in the contact list.
+
+Example 1:
+Request: "Email the B2B revenue breakdown to the finance director"
+Contacts: [
+  {"id": 1, "name": "Alice Bensaid", "role": "Finance Director", "department": "Finance"},
+  {"id": 2, "name": "Karim Hadjadj", "role": "Operations Manager", "department": "Ops"}
+]
+{"contact_id": 1, "reason": "Alice Bensaid holds the Finance Director role"}
+
+Example 2:
+Request: "send this to Sarah"
+Contacts: [
+  {"id": 7, "name": "Sarah Mansouri", "role": "Analyst", "department": "BI"},
+  {"id": 8, "name": "Karim Lounis", "role": "Director", "department": "Finance"}
+]
+{"contact_id": 7, "reason": "Sarah Mansouri matches the named person"}
+
+Example 3:
+Request: "email it"
+Contacts: [{"id": 1, "name": "Alice", "role": "Analyst", "department": "BI"}]
+{"contact_id": null, "reason": "no recipient described in the request"}"""
+
+
+def _parse_recipient_pick(text: str) -> tuple[int | None, str]:
+    """Pull (contact_id, reason) from the SLM's JSON reply. Returns (None, '')
+    if anything goes wrong — caller treats that as 'no recipient'."""
+    if not text:
+        return None, ""
+    s = text.strip()
+    if "```" in s:
+        parts = [p for p in s.split("```") if p.strip()]
+        s = max(parts, key=len) if parts else s
+    a, b = s.find("{"), s.rfind("}")
+    if a < 0 or b <= a:
+        return None, ""
+    try:
+        obj = json.loads(s[a:b + 1])
+    except Exception:  # noqa: BLE001
+        return None, ""
+    cid = obj.get("contact_id")
+    reason = str(obj.get("reason", ""))
+    if cid is None:
+        return None, reason
+    try:
+        return int(cid), reason
+    except (TypeError, ValueError):
+        return None, reason
+
+
+def resolve_recipient(query: str, contacts: list[dict]
+                      ) -> tuple[dict | None, list[dict]]:
+    """Ask the polisher SLM to pick the best contact for the request.
+
+    No keyword / substring matching: the model reads the full request and
+    the contact list and decides. If the SLM call fails or returns no
+    valid contact id, returns (None, contacts) and the email node will
+    surface the 'no recipient' notice to the user.
+    """
+    if not contacts:
         return None, []
-    return scored[0][1], [c for _, c in scored]
+
+    # Use the polisher's small model — already loaded for streaming. It is
+    # fast and natural-language capable; the matching prompt is short.
+    try:
+        from .slm import get_polisher
+        polisher = get_polisher()
+    except Exception:  # noqa: BLE001 — slm missing → no recipient
+        return None, contacts
+
+    # Compact the contact list so the model sees only what it needs.
+    compact = [{"id": c["id"], "name": c.get("name"),
+                "role": c.get("role"), "department": c.get("department")}
+               for c in contacts]
+    user_msg = (f"Request: {query}\n"
+                f"Contacts: {json.dumps(compact, ensure_ascii=False)}")
+
+    try:
+        reply = polisher.complete(_RECIPIENT_SYSTEM, user_msg, max_new=80)
+    except Exception:  # noqa: BLE001
+        return None, contacts
+
+    cid, _reason = _parse_recipient_pick(reply)
+    if cid is None:
+        return None, contacts
+    by_id = {c["id"]: c for c in contacts}
+    chosen = by_id.get(cid)
+    if chosen is None:
+        return None, contacts
+    # Return the chosen contact, plus the full list as candidates so the
+    # caller can show alternatives if needed.
+    return chosen, contacts
 
 
 def compose_email_draft(query: str, answer: str, rows: list[dict],

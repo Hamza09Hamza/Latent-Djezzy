@@ -316,19 +316,70 @@ def get_slm() -> DualRoleSLM:
     return _slm
 
 
+_POLISHER_SYSTEM = """You are a senior telecom data analyst writing the
+final answer for a business user. Your job is to turn the raw data block
+(rows from a SQL query, with column names and numeric values) into a
+short, natural, human paragraph that the user can read at a glance.
+
+ABSOLUTE RULES — break one and the answer is wrong:
+1. NEVER invent a number, a wilaya, a date, a KPI, or any fact that is
+   not in the raw data block. If a value is missing, say so plainly.
+2. Quote numbers exactly as given. You may round in PROSE only when the
+   user did not ask for precise figures (e.g. "about 491 million"), but
+   ALWAYS keep the precise value somewhere in your answer when the user
+   asked for a specific figure.
+3. Keep the units the data uses (DZD, %, weeks, communes, etc.). Never
+   add a unit that is not in the data ("million", "billion") unless the
+   column name or schema explicitly says so.
+4. Stay grounded in the user's question — if they asked "which wilaya
+   had the highest X?", lead with the wilaya and its value, not a
+   monologue about every row.
+
+STYLE — write like a smart colleague briefing the user:
+- Direct: lead with the answer, then add the supporting number(s).
+- Warm but professional: no robotic phrasing, no "Based on the data
+  provided…", no "I have analyzed…". Just say what the numbers show.
+- Match the user's language. If they wrote French, answer in French. If
+  Arabic, answer in Arabic. If English, English.
+- Maximum 3 short sentences, or a tight 4-line bullet list when there
+  are multiple comparable values (e.g. a wilaya comparison).
+- Never explain SQL, never mention "the query", never describe the data
+  block — just deliver the insight.
+
+EXAMPLES (good vs. bad — never sound like the BAD column):
+
+Raw: "1 row | wilaya: Tlemcen | net_income: 432,742,268.07"
+Question: "What's the net income for Tlemcen?"
+GOOD: "Tlemcen's net income stands at 432.74 million DZD."
+BAD : "Based on the data, the net_income value for Tlemcen is 432742268.07."
+
+Raw: "2 rows | wilaya: Sétif net_income 491,926,011 | wilaya: Tlemcen net_income 432,742,268"
+Question: "Compare net income for Tlemcen and Setif"
+GOOD: "Sétif leads with 491.9M DZD; Tlemcen sits a bit behind at 432.7M — a gap of about 59 million."
+BAD : "The first row shows Sétif with value 491926011 and the second row shows Tlemcen with value 432742268."
+
+Raw: "58 rows; top by recharge_rate: Biskra 39.58, Aïn Defla 39.16, Alger 39.11, …"
+Question: "Which wilaya had the highest prepaid recharge rate in 2025?"
+GOOD: "Biskra topped 2025 with the highest prepaid recharge rate at 39.58%, just ahead of Aïn Defla (39.16%) and Alger (39.11%)."
+BAD : "Here are all 58 wilayas: Adrar 38.5145, Alger 39.1108, Annaba 38.9396, …"
+
+Now write the answer."""
+
+
 class Polisher:
-    """0.5B model for streaming response polish. Loaded lazily on first use."""
+    """Small natural-language refiner. Default Qwen2.5-1.5B-Instruct: small
+    enough to stay cheap on T4, fluent enough for natural prose. Loaded
+    lazily on first use."""
 
-    HUB_ID = "Qwen/Qwen2.5-0.5B-Instruct"
-
-    def __init__(self):
+    def __init__(self, hub_id: str | None = None):
         from transformers import AutoModelForCausalLM, AutoTokenizer
+        self.hub_id = hub_id or V6Config.POLISHER_HUB_ID
         self.device = V6Config.device()
         dtype = (torch.float16 if self.device.type in ("cuda", "mps")
                  else torch.float32)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.HUB_ID)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.hub_id)
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.HUB_ID, torch_dtype=dtype,
+            self.hub_id, torch_dtype=dtype,
             device_map={"": str(self.device)})
         self.model.eval()
 
@@ -336,18 +387,11 @@ class Polisher:
         """Yield polished tokens one-by-one via TextIteratorStreamer."""
         from transformers import TextIteratorStreamer
 
-        system = (
-            "You are a professional telecom analytics assistant. "
-            "Rewrite the answer in clear, natural language. "
-            "Keep ALL numbers and KPI values exactly as given. "
-            "Be concise — maximum 3 sentences.")
-        user_msg = (f"Q: {question}\nA: {raw_answer}" if question
-                    else raw_answer)
+        user_msg = (f"User question: {question}\n\nRaw data block:\n{raw_answer}"
+                    if question else f"Raw data block:\n{raw_answer}")
 
-        messages = [{"role": "system", "content": system},
+        messages = [{"role": "system", "content": _POLISHER_SYSTEM},
                     {"role": "user", "content": user_msg}]
-        # tokenize=False → separate tokenizer call (apply_chat_template returns
-        # BatchEncoding in newer transformers, not a raw tensor)
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)
@@ -361,9 +405,11 @@ class Polisher:
                 self.model.generate(
                     **enc,
                     streamer=streamer,
-                    max_new_tokens=120,
+                    max_new_tokens=V6Config.POLISHER_MAX_NEW_TOKENS,
                     do_sample=True,
-                    temperature=0.4,
+                    temperature=0.5,
+                    top_p=0.9,
+                    repetition_penalty=1.05,
                     pad_token_id=self.tokenizer.eos_token_id)
             except Exception as e:  # noqa: BLE001
                 exc_holder.append(e)
@@ -376,6 +422,21 @@ class Polisher:
         t.join()
         if exc_holder:
             raise exc_holder[0]
+
+    @torch.no_grad()
+    def complete(self, system: str, user: str, max_new: int = 120) -> str:
+        """Blocking single-shot completion. Used for tasks like recipient
+        resolution where streaming offers no benefit."""
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": user}]
+        text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+        enc = self.tokenizer(text, return_tensors="pt").to(self.device)
+        out = self.model.generate(
+            **enc, max_new_tokens=max_new, do_sample=False,
+            pad_token_id=self.tokenizer.eos_token_id)
+        return self.tokenizer.decode(
+            out[0, enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
 
 
 _polisher: Polisher | None = None
