@@ -16,6 +16,8 @@ Design principles for these prompts:
 from __future__ import annotations
 import json
 
+from .config import V6Config
+
 VALID_INTENTS = ("data", "definition", "greeting", "meta", "unanswerable")
 
 
@@ -197,35 +199,10 @@ RULES (each is a hard requirement — break one and the query is rejected)
    - COUNT(*)   for "how many <rows>" questions on dimension tables.
    When unsure, prefer SUM for amounts and AVG for rates.
 
-6. TIME FILTER — translate routing.filters.time into a WHERE clause
-   Use the date column of the metric table (commonly `week_start`,
-   sometimes `as_of_dt` or `period`). Patterns:
-
-     - "2025"                → WHERE YEAR(week_start) = 2025
-     - "2024"                → WHERE YEAR(week_start) = 2024
-     - "Q1 2025"             → WHERE YEAR(week_start) = 2025
-                                 AND QUARTER(week_start) = 1
-     - "Q3 2025"             → WHERE YEAR(week_start) = 2025
-                                 AND QUARTER(week_start) = 3
-     - "this year"           → WHERE YEAR(week_start) = YEAR(CURDATE())
-     - "last year"           → WHERE YEAR(week_start) = YEAR(CURDATE()) - 1
-     - "this month"          → WHERE YEAR(week_start) = YEAR(CURDATE())
-                                 AND MONTH(week_start) = MONTH(CURDATE())
-     - "last month"          → WHERE week_start >= DATE_SUB(
-                                   DATE_FORMAT(CURDATE(),'%Y-%m-01'),
-                                   INTERVAL 1 MONTH)
-                                 AND week_start < DATE_FORMAT(CURDATE(),'%Y-%m-01')
-     - "last quarter"        → WHERE week_start >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
-     - "last week"           → WHERE week_start >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-     - "last N weeks"        → WHERE week_start >= DATE_SUB(CURDATE(), INTERVAL N WEEK)
-     - "over 2025" / "during 2025" → same as "2025"
-
-   SQLite variant (USE_SQLITE=1): replace YEAR/QUARTER/MONTH with
-   `strftime`: `strftime('%Y', week_start) = '2025'`,
-   `CAST(strftime('%m', week_start) AS INT) BETWEEN 7 AND 9` for Q3, etc.
-
-   If no metric table has a date column (rare), omit the time filter
-   and add a note in your reasoning — but never silently drop it.
+6. TIME FILTER — translate routing.filters.time into a WHERE clause.
+   Use the date column of the metric table (commonly `week_start`).
+   The exact functions to use are listed in the TIME FILTER DIALECT block
+   at the end of this instruction — use ONLY those functions, no others.
 
 7. RANKING — superlatives and top-N
    - "highest <X>"   → ORDER BY <X> DESC LIMIT 1
@@ -319,14 +296,57 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
             "any wilaya/location_id filter. If you want to break down by "
             "wilaya, JOIN dim_location and GROUP BY dl.wilaya.")
 
+    # ── dialect-aware time filter ─────────────────────────────────────────
+    _sqlite = V6Config.USE_SQLITE
+    if _sqlite:
+        _time_patterns = """\
+  SQLite — use strftime() ONLY (no YEAR/QUARTER/MONTH/CURDATE):
+    "2025"          → WHERE strftime('%Y', week_start) = '2025'
+    "2024"          → WHERE strftime('%Y', week_start) = '2024'
+    "Q1 <year>"     → WHERE strftime('%Y', week_start) = '<year>'
+                        AND CAST(strftime('%m', week_start) AS INT) BETWEEN 1 AND 3
+    "Q2 <year>"     → WHERE strftime('%Y', week_start) = '<year>'
+                        AND CAST(strftime('%m', week_start) AS INT) BETWEEN 4 AND 6
+    "Q3 <year>"     → WHERE strftime('%Y', week_start) = '<year>'
+                        AND CAST(strftime('%m', week_start) AS INT) BETWEEN 7 AND 9
+    "Q4 <year>"     → WHERE strftime('%Y', week_start) = '<year>'
+                        AND CAST(strftime('%m', week_start) AS INT) BETWEEN 10 AND 12
+    "this year"     → WHERE strftime('%Y', week_start) = strftime('%Y', 'now')
+    "last year"     → WHERE strftime('%Y', week_start) = CAST(strftime('%Y','now') AS INT) - 1
+    "this month"    → WHERE strftime('%Y-%m', week_start) = strftime('%Y-%m', 'now')
+    "last month"    → WHERE strftime('%Y-%m', week_start)
+                          = strftime('%Y-%m', date('now', 'start of month', '-1 month'))
+    "last quarter"  → WHERE week_start >= date('now', '-3 months')
+    "last week"     → WHERE week_start >= date('now', '-7 days')"""
+    else:
+        _time_patterns = """\
+  MySQL — use YEAR/QUARTER/MONTH/CURDATE() ONLY (no strftime):
+    "2025"          → WHERE YEAR(week_start) = 2025
+    "2024"          → WHERE YEAR(week_start) = 2024
+    "Q1 <year>"     → WHERE YEAR(week_start) = <year> AND QUARTER(week_start) = 1
+    "Q2 <year>"     → WHERE YEAR(week_start) = <year> AND QUARTER(week_start) = 2
+    "Q3 <year>"     → WHERE YEAR(week_start) = <year> AND QUARTER(week_start) = 3
+    "Q4 <year>"     → WHERE YEAR(week_start) = <year> AND QUARTER(week_start) = 4
+    "this year"     → WHERE YEAR(week_start) = YEAR(CURDATE())
+    "last year"     → WHERE YEAR(week_start) = YEAR(CURDATE()) - 1
+    "this month"    → WHERE YEAR(week_start)  = YEAR(CURDATE())
+                        AND MONTH(week_start) = MONTH(CURDATE())
+    "last month"    → WHERE week_start >= DATE_SUB(DATE_FORMAT(CURDATE(),'%Y-%m-01'), INTERVAL 1 MONTH)
+                        AND week_start <  DATE_FORMAT(CURDATE(),'%Y-%m-01')
+    "last quarter"  → WHERE week_start >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+    "last week"     → WHERE week_start >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)"""
+
     if time_phrase:
         surface_blocks.append(
-            f"TIME FILTER: the user said \"{time_phrase}\". Translate it "
-            f"into a WHERE clause per RULE 6 (use the metric table's date "
-            f"column — week_start unless the schema says otherwise).")
+            f"TIME FILTER DIALECT — DATABASE: {'SQLite' if _sqlite else 'MySQL'}\n"
+            f"{_time_patterns}\n\n"
+            f"  The user said: \"{time_phrase}\"\n"
+            f"  Match it to the pattern above and apply the correct WHERE clause.")
     else:
         surface_blocks.append(
-            "NO TIME FILTER was requested — do not invent one.")
+            f"TIME FILTER DIALECT — DATABASE: {'SQLite' if _sqlite else 'MySQL'}\n"
+            f"{_time_patterns}\n\n"
+            f"  NO TIME FILTER was requested — do not invent one.")
 
     if segment:
         surface_blocks.append(
