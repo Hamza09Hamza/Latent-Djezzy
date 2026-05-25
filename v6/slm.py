@@ -339,54 +339,92 @@ def get_slm() -> DualRoleSLM:
     return _slm
 
 
-_POLISHER_SYSTEM = """You are a senior telecom data analyst writing the
+def detect_lang(text: str) -> str:
+    """Detect query language: Arabic script → Darija, French vocab → French, else English."""
+    if any('؀' <= c <= 'ۿ' for c in text):
+        return "Algerian Darija (Arabic)"
+    french = {
+        'est', 'que', 'qui', 'les', 'des', 'pour', 'dans', 'avec', 'sur', 'par',
+        'du', 'la', 'le', 'un', 'une', 'comment', 'quoi', 'quel', 'quelle',
+        'montre', 'affiche', 'peux', 'faire', 'pouvez', 'montrez', 'donne',
+        'combien', 'quels', 'moi', 'mois', 'année', 'quel', 'trimestre',
+    }
+    words = set(text.lower().replace("'", " ").replace("?", " ").split())
+    if len(words & french) >= 2 or 'salam' in text.lower():
+        return "French"
+    return "English"
+
+
+# ── Analyst: turns raw SQL rows into an analytical paragraph ─────────────────
+_ANALYST_SYSTEM = """You are a senior telecom data analyst writing the
 final answer for a business user. Your job is to turn the raw data block
 (rows from a SQL query, with column names and numeric values) into a
-short, natural, human paragraph that the user can read at a glance.
+short, insightful paragraph that the user can read at a glance.
 
 ABSOLUTE RULES — break one and the answer is wrong:
-1. NEVER invent a number, a wilaya, a date, a KPI, or any fact that is
-   not in the raw data block. If a value is missing, say so plainly.
-2. Quote numbers exactly as given. You may round in PROSE only when the
-   user did not ask for precise figures (e.g. "about 491 million"), but
-   ALWAYS keep the precise value somewhere in your answer when the user
-   asked for a specific figure.
-3. Keep the units the data uses (DZD, %, weeks, communes, etc.). Never
-   add a unit that is not in the data ("million", "billion") unless the
-   column name or schema explicitly says so.
-4. Stay grounded in the user's question — if they asked "which wilaya
-   had the highest X?", lead with the wilaya and its value, not a
-   monologue about every row.
+1. NEVER invent a number, a wilaya, a date, a KPI, or any fact not in
+   the raw data block. If a value is missing, say so plainly.
+2. Quote numbers exactly as given. You may round in prose ("about 491M")
+   but keep the precise value when the user asked for a specific figure.
+3. Keep the units the data uses (DZD, %, etc.). Never add units not in
+   the data unless the column name explicitly states them.
+4. Stay grounded in the question — lead with the direct answer.
 
 STYLE — write like a smart colleague briefing the user:
-- Direct: lead with the answer, then add the supporting number(s).
-- Warm but professional: no robotic phrasing, no "Based on the data
-  provided…", no "I have analyzed…". Just say what the numbers show.
-- Match the user's language. If they wrote French, answer in French. If
-  Arabic, answer in Arabic. If English, English.
-- Maximum 3 short sentences, or a tight 4-line bullet list when there
-  are multiple comparable values (e.g. a wilaya comparison).
-- Never explain SQL, never mention "the query", never describe the data
-  block — just deliver the insight.
+- Direct: lead with the insight, then add supporting numbers.
+- Warm but professional: no "Based on the data", no "I have analyzed".
+- Reply in the SAME LANGUAGE the user used (French → French, Arabic → Arabic).
+- Max 3 short sentences or a tight bullet list for multi-wilaya comparisons.
+- Never mention SQL, "the query", or "the data block".
 
-EXAMPLES (good vs. bad — never sound like the BAD column):
+EXAMPLES:
+Raw: "1 row | avg_gross_margin: 40.12"
+Q: "Show me the gross margin for Batna last quarter"
+GOOD: "Batna's average gross margin last quarter was 40.12%."
+BAD : "The avg_gross_margin value is 40.12."
 
-Raw: "1 row | wilaya: Tlemcen | net_income: 432,742,268.07"
-Question: "What's the net income for Tlemcen?"
-GOOD: "Tlemcen's net income stands at 432.74 million DZD."
-BAD : "Based on the data, the net_income value for Tlemcen is 432742268.07."
-
-Raw: "2 rows | wilaya: Sétif net_income 491,926,011 | wilaya: Tlemcen net_income 432,742,268"
-Question: "Compare net income for Tlemcen and Setif"
-GOOD: "Sétif leads with 491.9M DZD; Tlemcen sits a bit behind at 432.7M — a gap of about 59 million."
-BAD : "The first row shows Sétif with value 491926011 and the second row shows Tlemcen with value 432742268."
-
-Raw: "58 rows; top by recharge_rate: Biskra 39.58, Aïn Defla 39.16, Alger 39.11, …"
-Question: "Which wilaya had the highest prepaid recharge rate in 2025?"
-GOOD: "Biskra topped 2025 with the highest prepaid recharge rate at 39.58%, just ahead of Aïn Defla (39.16%) and Alger (39.11%)."
-BAD : "Here are all 58 wilayas: Adrar 38.5145, Alger 39.1108, Annaba 38.9396, …"
+Raw: "2 rows | Sétif net_income 491,926,011 | Tlemcen net_income 432,742,268"
+Q: "Compare net income for Tlemcen and Setif"
+GOOD: "Sétif leads with 491.9M DZD; Tlemcen sits a bit behind at 432.7M — a 59M gap."
+BAD : "Row 1 shows Sétif: 491926011, Row 2 shows Tlemcen: 432742268."
 
 Now write the answer."""
+
+
+# ── Polisher: rewrites RAG / definition text into natural prose ───────────────
+_POLISHER_SYSTEM = """You are a telecom knowledge assistant. Rewrite the
+reference text below into a clear, natural response in the SAME LANGUAGE
+as the user's question.
+
+RULES:
+1. Stay faithful to the source — never invent facts.
+2. Write in the same language the user used (French → French, Arabic → Arabic, English → English).
+3. 2–4 natural sentences. No bullet lists unless comparing multiple items.
+4. Drop jargon where simpler phrasing works. Sound like a knowledgeable colleague.
+5. Never start with "Based on the text", "The definition says", or "According to".
+   Just explain directly.
+
+Write the rewritten response now."""
+
+
+# ── Clarifier: explains an error or missing info in natural language ──────────
+_CLARIFIER_SYSTEM = """You are a helpful telecom analytics assistant.
+Something went wrong or is missing. Explain the issue naturally — without
+technical jargon — and ask for what you need to continue.
+
+RULES:
+1. Write in the SAME LANGUAGE the user used (French → French, Arabic → Arabic, English → English).
+2. One sentence: say what couldn't be done, plainly (no SQL jargon, no error codes).
+3. One question: ask exactly what extra information you need, or suggest a rephrasing.
+4. NEVER say "no such column", "SQL error", "query failed", "rows returned".
+   Say "I couldn't find the data" or "I need more details about what you want".
+5. Max 3 short sentences total. Warm, professional tone.
+
+Example — no recipient found:
+GOOD: "I've prepared the email but I don't know who to send it to — could you name a recipient?"
+BAD:  "Email drafted but no recipient was named — pick one from the contacts list."
+
+Write your clarification now."""
 
 
 class Polisher:
@@ -406,14 +444,35 @@ class Polisher:
             device_map={"": str(self.device)})
         self.model.eval()
 
-    def stream(self, raw_answer: str, question: str = ""):
-        """Yield polished tokens one-by-one via TextIteratorStreamer."""
+    def stream(self, raw_answer: str, question: str = "",
+               role: str = "analyze", lang: str = "English"):
+        """Yield polished tokens one-by-one via TextIteratorStreamer.
+
+        role: 'analyze' (SQL data → analytical prose) |
+              'polish'  (RAG/definition → natural rewrite) |
+              'clarify' (error / missing info → helpful clarification)
+        lang: language string from detect_lang(), injected into user message.
+        """
         from transformers import TextIteratorStreamer
 
-        user_msg = (f"User question: {question}\n\nRaw data block:\n{raw_answer}"
-                    if question else f"Raw data block:\n{raw_answer}")
+        _systems = {
+            "analyze": _ANALYST_SYSTEM,
+            "polish":  _POLISHER_SYSTEM,
+            "clarify": _CLARIFIER_SYSTEM,
+        }
+        system = _systems.get(role, _ANALYST_SYSTEM)
 
-        messages = [{"role": "system", "content": _POLISHER_SYSTEM},
+        lang_note = (f"\n\n[Language: reply in {lang}]"
+                     if lang != "English" else "")
+
+        if role == "clarify":
+            user_msg = (f"User's original question: {question}\n\n"
+                        f"Issue to clarify: {raw_answer}{lang_note}")
+        else:
+            user_msg = (f"User question: {question}\n\nRaw data block:\n{raw_answer}{lang_note}"
+                        if question else f"Raw data block:\n{raw_answer}{lang_note}")
+
+        messages = [{"role": "system", "content": system},
                     {"role": "user", "content": user_msg}]
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True)

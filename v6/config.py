@@ -53,10 +53,10 @@ class V6Config:
     # KV-cache hand-off (latent communication) valid.
     #
     # Size toggle (V6_SLM_SIZE):
-    #   "3b" → Qwen2.5-Coder-3B-Instruct  (~6.4 GB fp16) — safe baseline
-    #   "4b" → Qwen3-4B                    (~8.0 GB fp16) — best SQL in class,
-    #           recommended default for L4/A100; drafter = Qwen3-0.6B
-    #   "7b" → Qwen2.5-Coder-7B-Instruct  (~14 GB fp16)  — needs V6_4BIT=1
+    #   "3b"  → Qwen2.5-Coder-3B-Instruct  (~6.4 GB fp16) — safe baseline
+    #   "4b"  → Qwen3.5-4B                  (~8.0 GB fp16) — current default,
+    #            drafter = Qwen3-0.6B; falls back to Qwen3-4B if not cached
+    #   "7b"  → Qwen2.5-Coder-7B-Instruct  (~14 GB fp16)  — needs V6_4BIT=1
     SLM_SIZE = _env("SLM_SIZE", "4b").lower()
     SLM_CANDIDATES_3B = [
         "qwen2.5-coder-3b-instruct",
@@ -64,8 +64,9 @@ class V6Config:
         "qwen2.5-coder-0.5b-instruct",
     ]
     SLM_CANDIDATES_4B = [
-        "qwen3-4b",
-        "qwen2.5-coder-3b-instruct",   # fallback if 4B not cached
+        "qwen3.5-4b",                    # primary: Qwen3.5-4B
+        "qwen3-4b",                      # fallback: Qwen3-4B if 3.5 not cached
+        "qwen2.5-coder-3b-instruct",
     ]
     SLM_CANDIDATES_7B = [
         "qwen2.5-coder-7b-instruct",
@@ -73,7 +74,7 @@ class V6Config:
     ]
     SLM_OVERRIDE   = _env("SLM_OVERRIDE")          # force a Hub model id
     SLM_HUB_ID_3B  = "Qwen/Qwen2.5-Coder-3B-Instruct"
-    SLM_HUB_ID_4B  = "Qwen/Qwen3-4B"
+    SLM_HUB_ID_4B  = "Qwen/Qwen3.5-4B"
     SLM_HUB_ID_7B  = "Qwen/Qwen2.5-Coder-7B-Instruct"
     USE_4BIT         = _env("4BIT", "0") == "1"      # 4-bit NF4 quantization
     USE_SPECULATIVE  = _env("SPECULATIVE", "1") == "1"  # drafter → 2-4x speed
@@ -186,8 +187,14 @@ class V6Config:
         if "0.5b" in m or "0.6b" in m:
             return None   # already the drafter — no smaller model to speculate with
 
-        # Qwen3 family → use Qwen3-0.6B (same architecture + tokenizer)
+        # Qwen3 / Qwen3.5 family → prefer Qwen3.5-0.6B, fall back to Qwen3-0.6B
         if "qwen3" in m:
+            if "qwen3.5" in m:
+                local35 = os.path.join(cls.MODELS_DIR, "qwen3.5-0.6b")
+                if os.path.isdir(local35):
+                    return local35
+                # try hub; if unavailable at runtime, slm.py silently falls back
+                return "Qwen/Qwen3.5-0.6B"
             local = os.path.join(cls.MODELS_DIR, "qwen3-0.6b")
             return local if os.path.isdir(local) else "Qwen/Qwen3-0.6B"
 

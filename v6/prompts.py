@@ -281,10 +281,23 @@ RULES (each is a hard requirement — break one and the query is rejected)
    then ORDER BY the aggregated KPI DESC LIMIT 1.
 
 8. TRENDS — grouped by time
-   When the user says "trend", "over time", "by week", "weekly", or
-   "month-over-month": GROUP BY week_start, ORDER BY week_start. When
-   combined with a wilaya comparison: GROUP BY dl.wilaya, week_start
-   ORDER BY week_start, dl.wilaya — one row per (wilaya, week).
+   When the user says "trend", "over time", "by week", "weekly", "plot",
+   "month-over-month", OR when `week_start` appears in MANDATORY COLUMNS:
+   - SELECT week_start alongside the metric(s).
+   - GROUP BY week_start, ORDER BY week_start ASC.
+   - Combined with multiple wilayas: GROUP BY dl.wilaya, week_start
+     ORDER BY week_start ASC — one row per (wilaya, week).
+
+   Trend example — net income trend, two wilayas over 2025:
+     SELECT dl.wilaya, week_start, SUM(f.net_income) AS net_income
+     FROM fpa_profitability f
+     JOIN dim_location dl ON f.location_id = dl.location_id
+     WHERE f.location_id IN (
+         SELECT location_id FROM dim_location
+         WHERE wilaya IN ('Tlemcen', 'Sétif'))
+       AND week_start >= '2025-01-01' AND week_start < '2026-01-01'
+     GROUP BY dl.wilaya, week_start
+     ORDER BY week_start ASC
 
 9. BREAKDOWN
    "breakdown by X" → GROUP BY X. Include every relevant KPI column
@@ -292,6 +305,30 @@ RULES (each is a hard requirement — break one and the query is rejected)
 
 10. LITERALS — put values directly in the WHERE clause; no placeholders,
     no ?'s, no :name binding.
+
+11. DEFAULT AGGREGATION — required unless RULE 8 (trend) applies
+    If the user is NOT asking for a trend / listing ("list all" / "show all"),
+    ALWAYS aggregate every metric column with SUM() or AVG(). Returning raw
+    weekly rows (one per week per commune) is almost never what a business
+    user wants — summarise the period instead.
+
+    One location + one metric → one scalar:
+      SELECT AVG(gross_margin) AS avg_gross_margin
+      FROM fpa_profitability
+      WHERE location_id IN (...)
+        AND week_start >= '2026-01-01' AND week_start < '2026-04-01'
+
+    Multiple metrics (breakdown) → aggregate each one:
+      SELECT SUM(capex_it)      AS total_capex_it,
+             SUM(capex_network) AS total_capex_network
+      FROM opex_capex
+      WHERE week_start >= '2026-01-01' AND week_start < '2027-01-01'
+
+    Multi-wilaya (no wilaya filter) → GROUP BY dl.wilaya:
+      SELECT dl.wilaya, AVG(gross_margin) AS avg_gross_margin
+      FROM fpa_profitability f
+      JOIN dim_location dl ON f.location_id = dl.location_id
+      GROUP BY dl.wilaya ORDER BY avg_gross_margin DESC
 
 ═══════════════════════════════════════════════════════════════════════
 FINAL CHECK before emitting (silently, in your head):
@@ -303,6 +340,8 @@ FINAL CHECK before emitting (silently, in your head):
   ☐ Time filter uses the pre-computed literal dates from TIME FILTER block.
   ☐ ORDER BY + LIMIT present iff the user asked for a ranking.
   ☐ GROUP BY present iff aggregating across a dimension.
+  ☐ Metric wrapped in SUM()/AVG() — no bare column selects unless RULE 8 trend.
+  ☐ Trend: week_start in SELECT and GROUP BY; ORDER BY week_start ASC.
 ═══════════════════════════════════════════════════════════════════════"""
 
 

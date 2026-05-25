@@ -212,10 +212,6 @@ def route_after_brain(state: dict) -> str:
         return "communicator"
 
     # Safety: never repeat a terminal action that already succeeded.
-    # Terminal actions (chart / email / template) produce artifacts — running
-    # one twice just duplicates the file. The brain handles this via training
-    # (terminal-stop augmentation in brain_data.py), but this guard catches
-    # any residual misfires until the model is fully converged.
     _TERMINAL = {"chart", "email", "template"}
     if action in _TERMINAL:
         step_log = state.get("step_log", [])
@@ -223,6 +219,26 @@ def route_after_brain(state: dict) -> str:
             s.get("action") == action and s.get("ok", False)
             for s in step_log)
         if already_done:
+            return "communicator"
+
+    # Keyword guards: terminal actions need an explicit signal in the query.
+    # Prevents the brain from triggering chart/email/template when the user
+    # didn't ask for one (a brain misfiring until training improves).
+    query_l = state.get("query", "").lower()
+    if action == "chart":
+        _chart_kw = {
+            "chart", "plot", "draw", "graphique", "graphe", "graph",
+            "visualize", "visualise", "trend", "tendance", "evolution",
+            "évolution", "courbe", "figure", "show me a", "montre",
+        }
+        if not any(kw in query_l for kw in _chart_kw):
+            return "communicator"
+    if action == "email":
+        _email_kw = {
+            "email", "mail", "send", "envoyer", "envoie", "message",
+            "director", "directeur", "manager", "responsable",
+        }
+        if not any(kw in query_l for kw in _email_kw):
             return "communicator"
 
     return action
@@ -315,8 +331,31 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
     sql, sql_valid, sql_issues = "", False, []
     exec_error: str | None = None
     rows, columns, exec_ok, err = [], [], False, None
+
+    # Carry-over errors from a previous macro-retry (brain re-picked sql).
+    # Inject a strong hint so the model doesn't repeat the same bad column.
+    _prior_errors = state.get("errors", [])
+    _prior_error_hint = ""
+    if _prior_errors:
+        _last_err = _prior_errors[-1][:300]
+        import re as _re
+        _bad_col_m = _re.search(r'no such column[:  ]+(\w+)', _last_err, _re.IGNORECASE)
+        if _bad_col_m:
+            _bad = _bad_col_m.group(1)
+            _prior_error_hint = (
+                f"\n\nPRIOR FAILURE: Column `{_bad}` was rejected by the database "
+                f"(error: '{_last_err[:120]}'). That column does not exist. "
+                f"The MANDATORY COLUMNS above are the ONLY valid names — "
+                f"do NOT write `{_bad}` anywhere in your SQL.")
+        else:
+            _prior_error_hint = (
+                f"\n\nPRIOR FAILURE: {_last_err[:150]}. "
+                f"Fix this and check MANDATORY COLUMNS carefully.")
+
     for attempt in range(1, V6Config.SQL_MAX_RETRIES + 2):
         instr = build_sqlgen_instruction(query, routing, entities, schema)
+        if attempt == 1 and _prior_error_hint:
+            instr += _prior_error_hint
         if attempt > 1 and (sql_issues or exec_error):
             hint = correction_hint(sql_issues, entities,
                                    exec_error=exec_error)
@@ -476,18 +515,19 @@ def template_node(state: dict) -> dict:
 
 # ── communicator (terminal) ──────────────────────────────────────────────
 _GREETING_TEXT = (
-    "Hello! I'm LatentMind V6 — ask me about telecom KPIs (revenue, ARPU, "
-    "churn, subscribers, OPEX, CAPEX, profit) for any Algerian wilaya. I can "
-    "chart a result, draft an email about it, or fill a report — just ask.")
+    "Hello! I'm LatentMind V6 — your telecom analytics agent for Algeria. "
+    "Ask me about revenue, ARPU, churn, subscribers, OPEX, CAPEX, or "
+    "profitability for any wilaya. I can also chart the result, draft an "
+    "email, or fill a report.")
 _META_TEXT = (
-    "I'm LatentMind V6, an analytics agent over the interndb telecom "
-    "database. I turn a question into SQL, run it, and report the numbers — "
-    "and on request I chart the result, draft an email, or fill a report. I "
-    "remember the conversation, so follow-ups like 'and for Oran?' work.")
+    "I'm LatentMind V6, a telecom analytics agent for the Algerian market. "
+    "I query the database, analyze the results, and can chart, email, or "
+    "report what I find. Ask me about KPIs, trends, comparisons, or "
+    "breakdowns — by wilaya, period, or segment.")
 _UNANSWERABLE_TEXT = (
-    "I can't answer that — it needs a KPI or table that isn't in the "
-    "database. Try revenue, ARPU, churn, subscribers, EBITDA, or OPEX/CAPEX "
-    "for an Algerian wilaya.")
+    "That metric isn't in the database. I can answer questions about "
+    "revenue, ARPU, churn, subscribers, EBITDA, OPEX, CAPEX, or "
+    "profitability — for any Algerian wilaya or time period.")
 
 
 def communicator_node(state: dict) -> dict:
