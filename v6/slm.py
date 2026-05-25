@@ -24,6 +24,59 @@ import torch
 
 from .config import V6Config
 
+# ── constrained SQL decoding helpers ────────────────────────────────────────
+
+_SQL_REGEX = (
+    r"(?s)"
+    r"SELECT\s+.+?"
+    r"\s+FROM\s+\w[\w.]*(?:\s+(?:AS\s+)?\w+)?"
+    r"(?:\s+(?:LEFT\s+|RIGHT\s+|INNER\s+|OUTER\s+)?"
+    r"JOIN\s+\w[\w.]*(?:\s+(?:AS\s+)?\w+)?"
+    r"(?:\s+ON\s+.+?))*"
+    r"(?:\s+WHERE\s+.+?)?"
+    r"(?:\s+GROUP\s+BY\s+.+?)?"
+    r"(?:\s+HAVING\s+.+?)?"
+    r"(?:\s+ORDER\s+BY\s+.+?)?"
+    r"(?:\s+LIMIT\s+\d+)?"
+    r"\s*;?"
+)
+
+
+def _build_sql_logits_processor(tokenizer):
+    """Return a lm-format-enforcer LogitsProcessor for SQL, or None if the
+    library is not installed. Failures are silent so unconstrained fallback
+    kicks in automatically."""
+    try:
+        from lmformatenforcer import RegexParser
+        from lmformatenforcer.integrations.transformers import (
+            build_transformers_prefix_allowed_tokens_fn,
+        )
+
+        parser = RegexParser(_SQL_REGEX)
+        prefix_fn = build_transformers_prefix_allowed_tokens_fn(tokenizer, parser)
+
+        class _RegexLogitsProcessor:
+            def __call__(self, input_ids, scores):
+                import torch
+                allowed = prefix_fn(0, input_ids[0])
+                mask = torch.full_like(scores, fill_value=float("-inf"))
+                if allowed:
+                    mask[0, list(allowed)] = 0.0
+                else:
+                    mask[0, tokenizer.eos_token_id] = 0.0
+                return scores + mask
+
+        return _RegexLogitsProcessor()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _strip_to_sql(text: str) -> str:
+    """Find the SELECT…; block — safety net for any stray leading whitespace."""
+    import re
+    m = re.search(r"(SELECT\b.*)", text, re.IGNORECASE | re.DOTALL)
+    return m.group(1).strip() if m else text.strip()
+
 
 class DualRoleSLM:
     def __init__(self, model_id: str | None = None,
@@ -123,26 +176,47 @@ class DualRoleSLM:
     @torch.no_grad()
     def run_sqlgen(self, thread_id: str = "default", instruction: str = "",
                    max_new: int | None = None, kv_reuse: bool = True) -> dict:
-        """Generate SQL, reusing the router's KV cache when available."""
-        max_new = max_new or V6Config.SQLGEN_MAX_NEW_TOKENS
+        """Generate SQL, reusing the router's KV cache when available.
+
+        When V6Config.USE_CONSTRAINED_SQL is True the generation is grammar-
+        constrained via lm-format-enforcer: every token step is masked so the
+        model can only emit valid SQL tokens — no preamble, no comments, no
+        trailing explanation. max_new drops to SQLGEN_CONSTRAINED_MAX_NEW_TOKENS
+        (~150) because there is no wasted prose to budget for. If the library
+        is unavailable or the processor fails, falls back to unconstrained.
+        """
+        constrained = V6Config.USE_CONSTRAINED_SQL
+        if max_new is None:
+            max_new = (V6Config.SQLGEN_CONSTRAINED_MAX_NEW_TOKENS
+                       if constrained else V6Config.SQLGEN_MAX_NEW_TOKENS)
+
         rr = self._store.get(thread_id)
         if rr is None:
             return {"sql_output": "", "kv_reused": False, "sqlgen_ms": 0.0,
                     "error": "no router state for thread"}
+
+        logits_processor = None
+        if constrained:
+            logits_processor = _build_sql_logits_processor(self.tokenizer)
+            if logits_processor is None:
+                constrained = False  # library missing — silent fallback
 
         t0 = time.time()
         sql_out, kv_used = None, False
         if kv_reuse and rr.get("_cache") is not None:
             try:
                 sql_out = self._sqlgen_kv(
-                    rr["_seq1"], rr["_cache"], instruction, max_new)
+                    rr["_seq1"], rr["_cache"], instruction, max_new,
+                    logits_processor=logits_processor)
                 kv_used = True
             except Exception:  # noqa: BLE001 — fall back to re-encode
                 sql_out = None
         if sql_out is None:
             sql_out = self._sqlgen_plain(
-                rr["_messages"], rr["router_output"], instruction, max_new)
+                rr["_messages"], rr["router_output"], instruction, max_new,
+                logits_processor=logits_processor)
         return {"sql_output": sql_out, "kv_reused": kv_used,
+                "constrained": constrained,
                 "sqlgen_ms": (time.time() - t0) * 1000.0}
 
     def clear_thread(self, thread_id: str) -> None:
@@ -175,7 +249,8 @@ class DualRoleSLM:
         t.join()
 
     # ── phase-2 implementations ──────────────────────────────────────────
-    def _sqlgen_kv(self, seq1, cache, instruction: str, max_new: int) -> str:
+    def _sqlgen_kv(self, seq1, cache, instruction: str, max_new: int,
+                   logits_processor=None) -> str:
         if not hasattr(cache, "get_seq_length"):
             from transformers import DynamicCache
             cache = DynamicCache.from_legacy_cache(cache)
@@ -196,22 +271,39 @@ class DualRoleSLM:
         full_ids = torch.cat([seq, fu_ids], dim=1)
         attn = torch.ones((1, full_ids.shape[1]), dtype=torch.long,
                           device=self.device)
-        out2 = self.model.generate(
+        gen_kw: dict = dict(
             input_ids=full_ids, attention_mask=attn, past_key_values=cache,
             max_new_tokens=max_new, do_sample=False,
             return_dict_in_generate=True, use_cache=True,
             pad_token_id=self.tokenizer.eos_token_id)
-        return self.tokenizer.decode(
+        if logits_processor is not None:
+            from transformers import LogitsProcessorList
+            gen_kw["logits_processor"] = LogitsProcessorList([logits_processor])
+        out2 = self.model.generate(**gen_kw)
+        raw = self.tokenizer.decode(
             out2.sequences[0, full_ids.shape[1]:],
             skip_special_tokens=True).strip()
+        return _strip_to_sql(raw)
 
     def _sqlgen_plain(self, router_messages, router_out, instruction,
-                      max_new) -> str:
+                      max_new, logits_processor=None) -> str:
         messages = list(router_messages) + [
             {"role": "assistant", "content": router_out},
             {"role": "user", "content": instruction},
         ]
-        return self.chat(messages, max_new_tokens=max_new)
+        text = self.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+        enc = self.tokenizer(text, return_tensors="pt").to(self.device)
+        gen_kw: dict = dict(
+            **enc, max_new_tokens=max_new, do_sample=False,
+            pad_token_id=self.tokenizer.eos_token_id)
+        if logits_processor is not None:
+            from transformers import LogitsProcessorList
+            gen_kw["logits_processor"] = LogitsProcessorList([logits_processor])
+        out = self.model.generate(**gen_kw)
+        raw = self.tokenizer.decode(
+            out[0, enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
+        return _strip_to_sql(raw)
 
 
 _slm: DualRoleSLM | None = None

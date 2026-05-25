@@ -62,7 +62,16 @@ class V6Config:
     USE_SPECULATIVE  = _env("SPECULATIVE", "1") == "1"  # 0.5B drafter → 2-4x speed
 
     ROUTER_MAX_NEW_TOKENS = 128   # routing JSON rarely exceeds 80 tokens
-    SQLGEN_MAX_NEW_TOKENS = 256   # subquery pattern; inline ID lists removed
+    SQLGEN_MAX_NEW_TOKENS = 256   # unconstrained fallback ceiling
+    SQLGEN_CONSTRAINED_MAX_NEW_TOKENS = 150  # constrained: pure SQL fits in ~110-130 tokens
+
+    # ── Constrained SQL decoding (lm-format-enforcer) ────────────────────
+    # When ON: a grammar processor masks non-SQL tokens at every generation
+    # step — no preamble, no comments, no explanation, output is always
+    # valid SQL structure, ~40% fewer tokens generated.
+    # Toggle: V6_CONSTRAINED_SQL=1 (on) / 0 (off, default)
+    # Requires: pip install lm-format-enforcer>=0.10.3
+    USE_CONSTRAINED_SQL = _env("CONSTRAINED_SQL", "0") == "1"
 
     # ── RAG encoder — frozen BGE-M3 (1024-d) ─────────────────────────────
     BGE_M3_LOCAL_DIR = os.path.join(MODELS_DIR, "bge-m3")
