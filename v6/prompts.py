@@ -283,21 +283,38 @@ RULES (each is a hard requirement — break one and the query is rejected)
 8. TRENDS — grouped by time
    When the user says "trend", "over time", "by week", "weekly", "plot",
    "month-over-month", OR when `week_start` appears in MANDATORY COLUMNS:
-   - SELECT week_start alongside the metric(s).
-   - GROUP BY week_start, ORDER BY week_start ASC.
-   - Combined with multiple wilayas: GROUP BY dl.wilaya, week_start
-     ORDER BY week_start ASC — one row per (wilaya, week).
+   - SELECT the time column alongside the metric(s).
+   - GROUP BY the time column, ORDER BY it ASC.
+   - Combined with multiple wilayas: GROUP BY dl.wilaya, <time_col>
+     ORDER BY <time_col> ASC — one row per (wilaya, period).
 
-   Trend example — net income trend, two wilayas over 2025:
-     SELECT dl.wilaya, week_start, SUM(f.net_income) AS net_income
+   Granularity — a TREND GRANULARITY block may appear in the surface inputs
+   below. If it does, FOLLOW IT and use monthly grouping. If it does not,
+   use week_start by default.
+
+   Trend example — yearly net income by MONTH (SQLite, from TREND GRANULARITY):
+     SELECT dl.wilaya,
+            strftime('%Y-%m-01', f.week_start) AS month_start,
+            SUM(f.net_income) AS net_income
      FROM fpa_profitability f
      JOIN dim_location dl ON f.location_id = dl.location_id
      WHERE f.location_id IN (
          SELECT location_id FROM dim_location
          WHERE wilaya IN ('Tlemcen', 'Sétif'))
-       AND week_start >= '2025-01-01' AND week_start < '2026-01-01'
-     GROUP BY dl.wilaya, week_start
-     ORDER BY week_start ASC
+       AND f.week_start >= '2025-01-01' AND f.week_start < '2026-01-01'
+     GROUP BY dl.wilaya, month_start
+     ORDER BY month_start ASC
+
+   Trend example — short period by WEEK (no TREND GRANULARITY block):
+     SELECT dl.wilaya, f.week_start, SUM(f.net_income) AS net_income
+     FROM fpa_profitability f
+     JOIN dim_location dl ON f.location_id = dl.location_id
+     WHERE f.location_id IN (
+         SELECT location_id FROM dim_location
+         WHERE wilaya IN ('Tlemcen', 'Sétif'))
+       AND f.week_start >= '2025-07-01' AND f.week_start < '2025-10-01'
+     GROUP BY dl.wilaya, f.week_start
+     ORDER BY f.week_start ASC
 
 9. BREAKDOWN
    "breakdown by X" → GROUP BY X. Include every relevant KPI column
@@ -341,7 +358,8 @@ FINAL CHECK before emitting (silently, in your head):
   ☐ ORDER BY + LIMIT present iff the user asked for a ranking.
   ☐ GROUP BY present iff aggregating across a dimension.
   ☐ Metric wrapped in SUM()/AVG() — no bare column selects unless RULE 8 trend.
-  ☐ Trend: week_start in SELECT and GROUP BY; ORDER BY week_start ASC.
+  ☐ Trend: time column (week_start or month_start) in SELECT and GROUP BY;
+          ORDER BY time col ASC. If TREND GRANULARITY block present → month_start.
 ═══════════════════════════════════════════════════════════════════════"""
 
 
@@ -473,6 +491,30 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
             f"encoded by the table name (prepaid_kpi vs postpaid_kpi); "
             f"the routing already picked the correct one — no extra "
             f"WHERE clause for segment is needed.")
+
+    # ── trend granularity hint (long periods → monthly grouping) ─────────────
+    # Only inject when (a) week_start is in the routing columns (it's a trend
+    # query per RULE 8) and (b) the resolved time span covers ≥ 4 months.
+    # Weekly rows over a full year produce 50+ rows per chart series; monthly
+    # produces 12 — far more readable.
+    _has_time_col = "week_start" in columns
+    if _has_time_col and resolved_time:
+        import re as _re2
+        _dates = _re2.findall(r"'(\d{4}-\d{2}-\d{2})'", resolved_time)
+        if len(_dates) == 2:
+            from datetime import date as _d
+            _d1, _d2 = _d.fromisoformat(_dates[0]), _d.fromisoformat(_dates[1])
+            _months = (_d2.year - _d1.year) * 12 + (_d2.month - _d1.month)
+            if _months >= 4:
+                _grp = ("strftime('%Y-%m-01', week_start)"
+                        if _sqlite else "DATE_FORMAT(week_start, '%Y-%m-01')")
+                surface_blocks.append(
+                    f"TREND GRANULARITY: The time range covers {_months} months. "
+                    f"Group by MONTH — not by week — so each chart line has "
+                    f"~{_months} points instead of ~{_months * 4}:\n"
+                    f"  {_grp} AS month_start\n"
+                    f"  Use `month_start` in SELECT, GROUP BY, and ORDER BY. "
+                    f"Do NOT use `week_start` in GROUP BY for this query.")
 
     return _SQLGEN_BASE + "\n\n" + "\n\n".join(surface_blocks)
 

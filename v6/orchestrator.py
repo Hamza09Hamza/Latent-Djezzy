@@ -86,18 +86,24 @@ def assemble(query: str, routing: dict, capabilities: list[str],
     routing_v["columns"] = valid_cols
 
     # confidence — does the KPI evidence support a data query?
-    # `grounding` is now the max cosine among non-wilaya chunks (see
-    # knowledge_block). A router-hallucinated table with only a location
-    # hit (grounding near 0) must not be treated as answerable.
+    # `grounding` is the max cosine among non-wilaya RAG chunks. Short follow-
+    # ups ("and for Tiaret?") carry no KPI keywords, so grounding is near-zero
+    # even when the router correctly inherited the KPI from context. If the
+    # router produced BOTH a metric table AND an actual KPI column (not just
+    # dimension columns like wilaya / week_start), trust that mapping: the
+    # router's RULE 5 did the follow-up inheritance work, not us.
     metric_tables = [t for t in valid_tables if t != "dim_location"]
+    _dim_only = {"wilaya", "location_id", "week_start", "month_start",
+                 "commune_id", "commune", "region"}
+    _kpi_cols = [c for c in valid_cols if c not in _dim_only]
     _floor = V6Config.RAG_LOW_CONF * 0.7   # 0.315 at default threshold
-    if metric_tables and grounding >= V6Config.RAG_LOW_CONF:
-        confidence = "high"
+    if metric_tables and _kpi_cols:
+        # Router gave us a metric table + a real KPI column → trust the mapping.
+        # High when RAG also confirms it; medium otherwise (handles follow-ups).
+        confidence = "high" if grounding >= V6Config.RAG_LOW_CONF else "medium"
     elif grounding >= V6Config.RAG_LOW_CONF or inherited:
         confidence = "medium"
     elif metric_tables and grounding >= _floor:
-        # Router found a table but KPI grounding is weak — let it try,
-        # but don't mark it high so the brain can bail after one attempt.
         confidence = "medium"
     else:
         confidence = "low"

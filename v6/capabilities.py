@@ -121,13 +121,27 @@ def make_chart(rows: list[dict], columns: list[str], query: str = "",
     fig, ax = plt.subplots(figsize=(9, 5))
     try:
         if date_col and len(rows) > 1:
-            xs = [str(r.get(date_col)) for r in rows]
-            for c in numeric[:3]:
-                ax.plot(xs, [r.get(c) for r in rows], marker="o", label=c)
+            if cat_col:
+                # Multi-series: one line per category (e.g. one line per wilaya)
+                from collections import defaultdict
+                groups: dict = defaultdict(list)
+                for r in rows:
+                    groups[str(r.get(cat_col, ""))].append(r)
+                for cat_val, cat_rows in sorted(groups.items()):
+                    cat_rows.sort(key=lambda r: str(r.get(date_col, "")))
+                    xs = [str(r.get(date_col)) for r in cat_rows]
+                    for c in numeric[:1]:
+                        ax.plot(xs, [r.get(c) for r in cat_rows],
+                                marker="o", label=str(cat_val))
+                ax.legend()
+            else:
+                xs = [str(r.get(date_col)) for r in rows]
+                for c in numeric[:3]:
+                    ax.plot(xs, [r.get(c) for r in rows], marker="o", label=c)
+                if len(numeric) > 1:
+                    ax.legend()
             ax.set_xlabel(date_col)
             chart_type = "line"
-            if len(numeric) > 1:
-                ax.legend()
             plt.xticks(rotation=45, ha="right")
         elif cat_col:
             labels = [str(r.get(cat_col)) for r in rows]
@@ -287,7 +301,7 @@ def compose_email_draft(query: str, answer: str, rows: list[dict],
     recipient, candidates = resolve_recipient(query, contacts)
 
     table = _markdown_table(rows, columns, limit=15) if rows else ""
-    subject = "Telecom analytics: " + (query.strip()[:60] or "your request")
+    subject = "Telecom analytics: " + (query.strip()[:100] or "your request")
     name = (recipient or {}).get("name", "there")
     intro = "Here are the analytics figures you asked for."
 

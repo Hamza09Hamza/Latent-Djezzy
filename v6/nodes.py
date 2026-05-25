@@ -202,12 +202,27 @@ def route_after_brain(state: dict) -> str:
         return "communicator"
     if state.get("brain_step", 0) >= V6Config.BRAIN_MAX_STEPS:
         return "communicator"
+
+    action = state.get("next_action", "")
+    query_l = state.get("query", "").lower()
+
+    # Template bypass: if the user explicitly asked for a report AND SQL
+    # already produced rows, allow template even when continue < seuil.
+    # The brain tends to under-score template after short single-row SQL
+    # results — this ensures the node gets a chance to run when warranted.
+    if (action == "template" and state.get("exec_ok") and
+            not any(s.get("action") == "template" and s.get("ok", False)
+                    for s in state.get("step_log", []))):
+        _template_kw = {"report", "put it in", "document", "fill",
+                        "rapport", "mettre", "generate a report", "rapporter"}
+        if any(kw in query_l for kw in _template_kw):
+            return "template"
+
     if state.get("continue_score", 0.0) < V6Config.BRAIN_SEUIL:
         return "communicator"
     conf = (state.get("brain_scores", {}) or {}).get("action_conf", 1.0)
     if conf < V6Config.BRAIN_CONF_MIN:
         return "communicator"
-    action = state.get("next_action", "")
     if action not in _ACTIONS:
         return "communicator"
 
@@ -224,7 +239,6 @@ def route_after_brain(state: dict) -> str:
     # Keyword guards: terminal actions need an explicit signal in the query.
     # Prevents the brain from triggering chart/email/template when the user
     # didn't ask for one (a brain misfiring until training improves).
-    query_l = state.get("query", "").lower()
     if action == "chart":
         _chart_kw = {
             "chart", "plot", "draw", "graphique", "graphe", "graph",
