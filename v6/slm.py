@@ -110,6 +110,7 @@ class DualRoleSLM:
         # The drafter generates γ candidate tokens per step; the main model
         # validates them all in one forward pass — free speed from the KV cache.
         self._draft: AutoModelForCausalLM | None = None
+        self._draft_tokenizer: AutoTokenizer | None = None
         draft_id = V6Config.draft_slm_id(model_id) if V6Config.USE_SPECULATIVE else None
         if draft_id and draft_id != model_id:
             try:
@@ -117,8 +118,12 @@ class DualRoleSLM:
                 self._draft = AutoModelForCausalLM.from_pretrained(draft_id, **draft_kwargs)
                 self._draft.to(self.device)
                 self._draft.eval()
+                # Newer transformers (universal assisted decoding) requires both
+                # tokenizers when main and draft have different vocabularies.
+                self._draft_tokenizer = AutoTokenizer.from_pretrained(draft_id)
             except Exception:
                 self._draft = None
+                self._draft_tokenizer = None
 
         im_end = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
         self._im_end = (im_end if isinstance(im_end, int) and im_end >= 0
@@ -138,6 +143,8 @@ class DualRoleSLM:
                       pad_token_id=self.tokenizer.eos_token_id)
         if self._draft is not None:
             gen_kw["assistant_model"] = self._draft
+            gen_kw["tokenizer"] = self.tokenizer
+            gen_kw["assistant_tokenizer"] = self._draft_tokenizer
         out = self.model.generate(**gen_kw)
         return self.tokenizer.decode(
             out[0, enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
@@ -158,6 +165,8 @@ class DualRoleSLM:
             pad_token_id=self.tokenizer.eos_token_id)
         if self._draft is not None:
             gen_kw["assistant_model"] = self._draft  # speculative decoding
+            gen_kw["tokenizer"] = self.tokenizer
+            gen_kw["assistant_tokenizer"] = self._draft_tokenizer
         out1 = self.model.generate(**gen_kw)
         router_out = self.tokenizer.decode(
             out1.sequences[0, enc.input_ids.shape[1]:],
