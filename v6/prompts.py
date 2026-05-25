@@ -15,6 +15,8 @@ Design principles for these prompts:
 
 from __future__ import annotations
 import json
+import re
+from datetime import date, timedelta
 
 from .config import V6Config
 
@@ -138,11 +140,74 @@ User question: Q4 2025 performance summary
 {"intent": "data", "tables": ["fpa_profitability", "global_revenue"], "columns": ["ebitda", "total_revenue", "net_income", "ebitda_margin"], "filters": {"wilayas": [], "segment": null, "time": "Q4 2025"}, "notes": "performance summary maps to fpa_profitability + global_revenue"}"""
 
 
+def _resolve_time(phrase: str) -> str | None:
+    """Pre-compute a literal WHERE-clause snippet from a relative time phrase.
+
+    Returns something like "week_start >= '2026-01-01' AND week_start < '2026-04-01'"
+    so the SQL-gen model never has to call date functions — just paste the dates.
+    Returns None if the phrase is unrecognised (falls back to the dialect pattern table).
+    """
+    if not phrase:
+        return None
+    today = date.today()
+    y, m = today.year, today.month
+    p = phrase.strip().lower()
+
+    def _s(yr: int, mo: int) -> str:
+        return f"{yr:04d}-{mo:02d}-01"
+
+    if "last quarter" in p:
+        q = (m - 1) // 3              # 0=Q1, 1=Q2, 2=Q3, 3=Q4 (current)
+        bounds = [                     # (start_y, start_m, end_y, end_m) of last quarter
+            (y - 1, 10, y,  1),       # in Q1 → last was Q4 of prev year
+            (y,      1, y,  4),       # in Q2 → last was Q1
+            (y,      4, y,  7),       # in Q3 → last was Q2
+            (y,      7, y, 10),       # in Q4 → last was Q3
+        ]
+        sy, sm, ey, em = bounds[q]
+        return f"week_start >= '{_s(sy, sm)}' AND week_start < '{_s(ey, em)}'"
+
+    if "last month" in p:
+        pm_y, pm_m = (y - 1, 12) if m == 1 else (y, m - 1)
+        return f"week_start >= '{_s(pm_y, pm_m)}' AND week_start < '{_s(y, m)}'"
+
+    if "last week" in p:
+        ago = (today - timedelta(days=7)).isoformat()
+        return f"week_start >= '{ago}'"
+
+    if "this year" in p:
+        return f"week_start >= '{_s(y, 1)}' AND week_start < '{_s(y + 1, 1)}'"
+
+    if "this month" in p:
+        nm_y, nm_m = (y + 1, 1) if m == 12 else (y, m + 1)
+        return f"week_start >= '{_s(y, m)}' AND week_start < '{_s(nm_y, nm_m)}'"
+
+    if "last year" in p:
+        return f"week_start >= '{_s(y - 1, 1)}' AND week_start < '{_s(y, 1)}'"
+
+    mq = re.match(r'q([1-4])\s+(\d{4})', p)
+    if mq:
+        qn, qy = int(mq.group(1)), int(mq.group(2))
+        sm2 = (qn - 1) * 3 + 1
+        em2 = sm2 + 3
+        ey2 = qy + (1 if em2 > 12 else 0)
+        em3 = em2 - 12 if em2 > 12 else em2
+        return f"week_start >= '{_s(qy, sm2)}' AND week_start < '{_s(ey2, em3)}'"
+
+    my = re.match(r'^(\d{4})$', p)
+    if my:
+        yr = int(my.group(1))
+        return f"week_start >= '{_s(yr, 1)}' AND week_start < '{_s(yr + 1, 1)}'"
+
+    return None  # unrecognised — fall back to the dialect pattern table
+
+
 _SQLGEN_BASE = """PHASE 2 — SQL GENERATION.
 
 You now write ONE read-only SQL SELECT that answers the user's question.
-The routing JSON above tells you which tables, columns and filters to
-use. Output ONLY the SQL statement — no JSON, no markdown, no comment.
+The routing JSON above tells you which tables, columns and filters to use.
+Output ONLY the SQL statement — no JSON, no markdown, no comments (no --),
+no explanation before or after. The first character of your reply MUST be 'S'.
 Start with SELECT or WITH.
 
 ═══════════════════════════════════════════════════════════════════════
@@ -230,13 +295,14 @@ RULES (each is a hard requirement — break one and the query is rejected)
 
 ═══════════════════════════════════════════════════════════════════════
 FINAL CHECK before emitting (silently, in your head):
+  ☐ Reply starts with SELECT or WITH — first character is 'S', no leading text.
   ☐ Uses only the routed tables.
+  ☐ Uses only the exact column names from MANDATORY COLUMNS — no invented variants.
   ☐ All wilaya filters use the subquery pattern with canonical names.
   ☐ No wilaya filter that the user did not ask for.
-  ☐ Time filter present iff routing.filters.time is non-null.
+  ☐ Time filter uses the pre-computed literal dates from TIME FILTER block.
   ☐ ORDER BY + LIMIT present iff the user asked for a ranking.
   ☐ GROUP BY present iff aggregating across a dimension.
-  ☐ Statement starts with SELECT or WITH.
 ═══════════════════════════════════════════════════════════════════════"""
 
 
@@ -284,6 +350,14 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
             + ", ".join(f"`{t}`" for t in metric_tables)
             + " (plus `dim_location` if a wilaya filter or GROUP BY "
               "dl.wilaya is needed). Do NOT use any other table.")
+
+    columns = routing.get("columns", [])
+    if columns:
+        surface_blocks.append(
+            "MANDATORY COLUMNS (exact names — never invent variants): "
+            + ", ".join(f"`{c}`" for c in columns)
+            + "\n  Use ONLY these column names. E.g. if listed as `migration_rate`, "
+              "never write `pmigration_rate` or any other variant.")
 
     if wilayas:
         canon = ", ".join(f"'{w}'" for w in wilayas)
@@ -336,17 +410,23 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
     "last quarter"  → WHERE week_start >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
     "last week"     → WHERE week_start >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)"""
 
+    resolved_time = _resolve_time(time_phrase) if time_phrase else None
     if time_phrase:
-        surface_blocks.append(
-            f"TIME FILTER DIALECT — DATABASE: {'SQLite' if _sqlite else 'MySQL'}\n"
-            f"{_time_patterns}\n\n"
-            f"  The user said: \"{time_phrase}\"\n"
-            f"  Match it to the pattern above and apply the correct WHERE clause.")
+        if resolved_time:
+            surface_blocks.append(
+                f"TIME FILTER (pre-computed from \"{time_phrase}\"):\n"
+                f"  Apply this EXACT condition in the WHERE clause:\n"
+                f"  {resolved_time}\n"
+                f"  Do NOT use SQL date functions (strftime, YEAR, MONTH, etc.). "
+                f"Paste these literal date strings as-is.")
+        else:
+            surface_blocks.append(
+                f"TIME FILTER DIALECT — DATABASE: {'SQLite' if _sqlite else 'MySQL'}\n"
+                f"{_time_patterns}\n\n"
+                f"  The user said: \"{time_phrase}\"\n"
+                f"  Match it to the pattern above and apply the correct WHERE clause.")
     else:
-        surface_blocks.append(
-            f"TIME FILTER DIALECT — DATABASE: {'SQLite' if _sqlite else 'MySQL'}\n"
-            f"{_time_patterns}\n\n"
-            f"  NO TIME FILTER was requested — do not invent one.")
+        surface_blocks.append("NO TIME FILTER was requested — do not invent one.")
 
     if segment:
         surface_blocks.append(
