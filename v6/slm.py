@@ -118,9 +118,13 @@ class DualRoleSLM:
                 self._draft = AutoModelForCausalLM.from_pretrained(draft_id, **draft_kwargs)
                 self._draft.to(self.device)
                 self._draft.eval()
-                # Newer transformers (universal assisted decoding) requires both
-                # tokenizers when main and draft have different vocabularies.
-                self._draft_tokenizer = AutoTokenizer.from_pretrained(draft_id)
+                # Universal assisted decoding: only pass tokenizer args when the
+                # two models have *different* vocabularies (different vocab_size).
+                # Passing assistant_tokenizer when they share a vocab raises ValueError.
+                draft_tok = AutoTokenizer.from_pretrained(draft_id)
+                main_vocab  = self.tokenizer.vocab_size
+                draft_vocab = draft_tok.vocab_size
+                self._draft_tokenizer = draft_tok if draft_vocab != main_vocab else None
             except Exception:
                 self._draft = None
                 self._draft_tokenizer = None
@@ -143,8 +147,9 @@ class DualRoleSLM:
                       pad_token_id=self.tokenizer.eos_token_id)
         if self._draft is not None:
             gen_kw["assistant_model"] = self._draft
-            gen_kw["tokenizer"] = self.tokenizer
-            gen_kw["assistant_tokenizer"] = self._draft_tokenizer
+            if self._draft_tokenizer is not None:   # different vocab → need both
+                gen_kw["tokenizer"] = self.tokenizer
+                gen_kw["assistant_tokenizer"] = self._draft_tokenizer
         out = self.model.generate(**gen_kw)
         return self.tokenizer.decode(
             out[0, enc.input_ids.shape[1]:], skip_special_tokens=True).strip()
