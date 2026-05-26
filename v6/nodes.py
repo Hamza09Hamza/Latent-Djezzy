@@ -206,17 +206,20 @@ def route_after_brain(state: dict) -> str:
     action = state.get("next_action", "")
     query_l = state.get("query", "").lower()
 
-    # Template bypass: if the user explicitly asked for a report AND SQL
-    # already produced rows, allow template even when continue < seuil.
-    # The brain tends to under-score template after short single-row SQL
-    # results — this ensures the node gets a chance to run when warranted.
-    if (action == "template" and state.get("exec_ok") and
-            not any(s.get("action") == "template" and s.get("ok", False)
-                    for s in state.get("step_log", []))):
-        _template_kw = {"report", "put it in", "document", "fill",
-                        "rapport", "mettre", "generate a report", "rapporter"}
-        if any(kw in query_l for kw in _template_kw):
-            return "template"
+    # Strong template bypass: when the user asks for a report AND data is
+    # available — either from this turn's SQL (exec_ok) OR the previous
+    # turn's persisted last_rows (cross-turn follow-up like "Put it in a
+    # report") — skip whatever action the brain chose and go straight to
+    # template. Fires before the seuil check so a low continue score can't
+    # suppress it.
+    _template_kw = {"report", "put it in", "document", "fill",
+                    "rapport", "mettre", "generate a report", "rapporter"}
+    _template_done = any(s.get("action") == "template" and s.get("ok", False)
+                         for s in state.get("step_log", []))
+    if (not _template_done
+            and any(kw in query_l for kw in _template_kw)
+            and (state.get("exec_ok") or state.get("last_rows"))):
+        return "template"
 
     if state.get("continue_score", 0.0) < V6Config.BRAIN_SEUIL:
         return "communicator"
@@ -508,8 +511,11 @@ def email_node(state: dict) -> dict:
 
 def template_node(state: dict) -> dict:
     t0 = time.time()
-    res = fill_report(state["query"], state.get("rows", []),
-                      state.get("columns", []), state.get("final_answer", ""),
+    # Fall back to the previous turn's persisted rows when the current turn
+    # didn't run SQL (e.g. "Put it in a report" as a cross-turn follow-up).
+    rows = state.get("rows") or state.get("last_rows", [])
+    cols = state.get("columns") or state.get("last_columns", [])
+    res = fill_report(state["query"], rows, cols, state.get("final_answer", ""),
                       state.get("entities", {}))
     ok = res["ok"]
     entry = {"action": "template", "ok": ok,
@@ -561,8 +567,12 @@ def communicator_node(state: dict) -> dict:
     elif intent == "unanswerable":
         answer = _UNANSWERABLE_TEXT
     elif not answer:
-        answer = ("I wasn't able to pull the data for that. Could you "
-                  "rephrase it with a clearer KPI, wilaya and period?")
+        if state.get("document_path"):
+            # Template ran using last_rows from a prior turn — no SQL this turn.
+            answer = "Report generated from the previous query result."
+        else:
+            answer = ("I wasn't able to pull the data for that. Could you "
+                      "rephrase it with a clearer KPI, wilaya and period?")
 
     # capability notes
     notes: list[str] = []
