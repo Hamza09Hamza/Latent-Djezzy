@@ -193,7 +193,12 @@ def brain_node(state: dict) -> dict:
 
 
 def route_after_brain(state: dict) -> str:
-    """The seuil: keep looping, or hand off to the communicator."""
+    """The seuil: keep looping, or hand off to the communicator.
+
+    Routing is purely brain-driven — the trained action head decides which
+    step comes next. No keyword lists or hardcoded heuristics here; those
+    belong in the training traces, not in the router.
+    """
     # Non-data intents never need an action — the communicator handles them
     # directly. Guard here so a misfiring action head can't send a greeting
     # or unanswerable query into the SQL pipeline.
@@ -204,22 +209,6 @@ def route_after_brain(state: dict) -> str:
         return "communicator"
 
     action = state.get("next_action", "")
-    query_l = state.get("query", "").lower()
-
-    # Strong template bypass: when the user asks for a report AND data is
-    # available — either from this turn's SQL (exec_ok) OR the previous
-    # turn's persisted last_rows (cross-turn follow-up like "Put it in a
-    # report") — skip whatever action the brain chose and go straight to
-    # template. Fires before the seuil check so a low continue score can't
-    # suppress it.
-    _template_kw = {"report", "put it in", "document", "fill",
-                    "rapport", "mettre", "generate a report", "rapporter"}
-    _template_done = any(s.get("action") == "template" and s.get("ok", False)
-                         for s in state.get("step_log", []))
-    if (not _template_done
-            and any(kw in query_l for kw in _template_kw)
-            and (state.get("exec_ok") or state.get("last_rows"))):
-        return "template"
 
     if state.get("continue_score", 0.0) < V6Config.BRAIN_SEUIL:
         return "communicator"
@@ -232,30 +221,10 @@ def route_after_brain(state: dict) -> str:
     # Safety: never repeat a terminal action that already succeeded.
     _TERMINAL = {"chart", "email", "template"}
     if action in _TERMINAL:
-        step_log = state.get("step_log", [])
         already_done = any(
             s.get("action") == action and s.get("ok", False)
-            for s in step_log)
+            for s in state.get("step_log", []))
         if already_done:
-            return "communicator"
-
-    # Keyword guards: terminal actions need an explicit signal in the query.
-    # Prevents the brain from triggering chart/email/template when the user
-    # didn't ask for one (a brain misfiring until training improves).
-    if action == "chart":
-        _chart_kw = {
-            "chart", "plot", "draw", "graphique", "graphe", "graph",
-            "visualize", "visualise", "trend", "tendance", "evolution",
-            "évolution", "courbe", "figure", "show me a", "montre",
-        }
-        if not any(kw in query_l for kw in _chart_kw):
-            return "communicator"
-    if action == "email":
-        _email_kw = {
-            "email", "mail", "send", "envoyer", "envoie", "message",
-            "director", "directeur", "manager", "responsable",
-        }
-        if not any(kw in query_l for kw in _email_kw):
             return "communicator"
 
     return action
