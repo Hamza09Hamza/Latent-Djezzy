@@ -445,13 +445,13 @@ class Polisher:
         self.model.eval()
 
     def stream(self, raw_answer: str, question: str = "",
-               role: str = "analyze", lang: str = "English"):
+               role: str = "analyze"):
         """Yield polished tokens one-by-one via TextIteratorStreamer.
 
         role: 'analyze' (SQL data → analytical prose) |
               'polish'  (RAG/definition → natural rewrite) |
               'clarify' (error / missing info → helpful clarification)
-        lang: language string from detect_lang(), injected into user message.
+        The model infers the response language from the user's question text.
         """
         from transformers import TextIteratorStreamer
 
@@ -462,15 +462,12 @@ class Polisher:
         }
         system = _systems.get(role, _ANALYST_SYSTEM)
 
-        lang_note = (f"\n\n[Language: reply in {lang}]"
-                     if lang != "English" else "")
-
         if role == "clarify":
             user_msg = (f"User's original question: {question}\n\n"
-                        f"Issue to clarify: {raw_answer}{lang_note}")
+                        f"Issue to clarify: {raw_answer}")
         else:
-            user_msg = (f"User question: {question}\n\nRaw data block:\n{raw_answer}{lang_note}"
-                        if question else f"Raw data block:\n{raw_answer}{lang_note}")
+            user_msg = (f"User question: {question}\n\nRaw data block:\n{raw_answer}"
+                        if question else f"Raw data block:\n{raw_answer}")
 
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": user_msg}]
