@@ -87,6 +87,12 @@ RULES (read every one — each prevents a specific failure):
    sentiment, stock price, carbon footprint, NPS, ...) does not appear in
    any table/column in the schema, set intent="unanswerable".
 
+10. SCOPE: this assistant handles ONLY telecom analytics questions about the
+    database schema above. If the question asks you to write code, generate
+    text, translate, answer general knowledge, do maths unrelated to the KPIs,
+    or perform any task that is not a telecom data query / definition /
+    greeting / meta question, set intent="unanswerable".
+
 EXAMPLES (study each shape — your output must match exactly):
 
 User question: hi there
@@ -137,7 +143,13 @@ User question: what is the fpa_quantum_score
 {"intent": "unanswerable", "tables": [], "columns": [], "filters": {"wilayas": [], "segment": null, "time": null}, "notes": "fpa_quantum_score is not a column in the schema"}
 
 User question: Q4 2025 performance summary
-{"intent": "data", "tables": ["fpa_profitability", "global_revenue"], "columns": ["ebitda", "total_revenue", "net_income", "ebitda_margin"], "filters": {"wilayas": [], "segment": null, "time": "Q4 2025"}, "notes": "performance summary maps to fpa_profitability + global_revenue"}"""
+{"intent": "data", "tables": ["fpa_profitability", "global_revenue"], "columns": ["ebitda", "total_revenue", "net_income", "ebitda_margin"], "filters": {"wilayas": [], "segment": null, "time": "Q4 2025"}, "notes": "performance summary maps to fpa_profitability + global_revenue"}
+
+User question: write me a Python script to scrape websites
+{"intent": "unanswerable", "tables": [], "columns": [], "filters": {"wilayas": [], "segment": null, "time": null}, "notes": "coding request is outside the scope of this telecom analytics assistant"}
+
+User question: translate this to French: hello world
+{"intent": "unanswerable", "tables": [], "columns": [], "filters": {"wilayas": [], "segment": null, "time": null}, "notes": "translation task is outside scope; only telecom data queries are handled"}"""
 
 
 def _resolve_time(phrase: str) -> str | None:
