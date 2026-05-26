@@ -410,19 +410,37 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
                               + (f" ({err})." if err else "."))})
 
     # compose the data answer
+    _db_range = schema.date_range  # e.g. ("2025-07-16", "2026-04-29")
     if not sql:
         answer = ("I couldn't build a valid SQL query for that. "
                   "Could you rephrase it with a clearer KPI?")
     elif not exec_ok:
         answer = f"I built a query but it failed to run ({err}). SQL: {sql}"
     elif not rows:
-        answer = "The query ran but returned no matching rows."
+        # 0-row result — most often a period outside the DB coverage window.
+        if _db_range:
+            answer = (f"No data found for that period — the database covers "
+                      f"{_db_range[0]} to {_db_range[1]}. "
+                      f"Try asking about a date within this range.")
+        else:
+            answer = "The query ran but returned no matching rows."
     else:
-        answer = _summarize_rows(rows, columns)
-        caveats = [i for i in sql_issues if "wilaya" in i or "week_start" in i]
-        if caveats:
-            answer += ("\n(Note: the query may not perfectly match your "
-                       "request — " + caveats[0] + ".)")
+        # Detect all-NULL aggregate (e.g. SUM over an empty date range)
+        _all_null = (len(rows) == 1
+                     and all(v is None for v in rows[0].values()))
+        if _all_null:
+            if _db_range:
+                answer = (f"No data found for that period — the database "
+                          f"covers {_db_range[0]} to {_db_range[1]}. "
+                          f"Try asking about a date within this range.")
+            else:
+                answer = "No data available for that query."
+        else:
+            answer = _summarize_rows(rows, columns)
+            caveats = [i for i in sql_issues if "wilaya" in i or "week_start" in i]
+            if caveats:
+                answer += ("\n(Note: the query may not perfectly match your "
+                           "request — " + caveats[0] + ".)")
 
     errors = list(state.get("errors", []))
     if err:

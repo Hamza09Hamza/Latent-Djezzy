@@ -80,7 +80,7 @@ _SUBQUERY_LOC_RE = re.compile(
     r"\blocation_id\s*in\s*\(\s*select", re.IGNORECASE)
 # Extract wilaya names used in any = / IN filter
 _WILAYA_EQ_RE = re.compile(
-    r"\bwilaya\s*=\s*'([^']*)'", re.IGNORECASE)
+    r"\bwilaya\s*=\s*'((?:[^']|'')*)'", re.IGNORECASE)  # handles SQL '' escaping
 _WILAYA_IN_CLAUSE_RE = re.compile(
     r"\bwilaya\s+in\s*\(([^)]*)\)", re.IGNORECASE)
 
@@ -148,15 +148,17 @@ def consistency_check(sql: str, entities: dict, query: str = "",
             "query filters by wilaya/location_id but the user named no specific "
             "wilaya; remove the filter and use GROUP BY dl.wilaya to show all wilayas")
 
-    # 3. non-canonical wilaya name — extract names the SQL uses in wilaya filters
+    # 3. non-canonical wilaya name — extract names the SQL uses in wilaya filters.
+    # We unescape SQL double-single-quotes (M''Sila → M'Sila) before comparing so
+    # that correctly escaped apostrophe names never trigger a false-positive.
     if requested_names:
         canonical_set = set(requested_names)
         sql_wilaya_names: list[str] = []
         for m in _WILAYA_EQ_RE.finditer(s):
-            sql_wilaya_names.append(m.group(1))
+            sql_wilaya_names.append(m.group(1).replace("''", "'"))
         for m in _WILAYA_IN_CLAUSE_RE.finditer(s):
             for part in m.group(1).split(","):
-                name = part.strip().strip("'").strip('"')
+                name = part.strip().strip("'").strip('"').replace("''", "'")
                 if name:
                     sql_wilaya_names.append(name)
         for name in sql_wilaya_names:
@@ -198,7 +200,11 @@ def correction_hint(issues: list[str], entities: dict,
             "filter completely. Instead JOIN dim_location and GROUP BY dl.wilaya "
             "to return one row per wilaya.")
     if any("canonical DB spelling" in i for i in issues):
-        canon = ", ".join(f"'{w}'" for w in wilayas)
+        # SQL-escape apostrophes: M'Sila → 'M''Sila' so the hint shows
+        # valid SQL that the model can copy verbatim.
+        def _sql_lit(w: str) -> str:
+            return "'" + w.replace("'", "''") + "'"
+        canon = ", ".join(_sql_lit(w) for w in wilayas)
         parts.append(
             f"Use the exact canonical French wilaya spelling(s): {canon}. "
             f"These go in: WHERE wilaya = '...' or WHERE wilaya IN (...).")
