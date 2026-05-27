@@ -1,6 +1,6 @@
 {
   "system": {
-    "name": "LatentMind V6",
+    "name": "Djezzy Voice Assistant ",
     "description": "An agentic analytics assistant for an Algerian mobile operator. It answers natural-language questions about telecom KPIs — revenue, ARPU, churn, subscribers, profitability, OPEX and CAPEX — per wilaya, by generating and running read-only SQL. It can also chart results, draft emails to colleagues, and fill report templates with the data."
   },
   "business_context": [

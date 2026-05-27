@@ -1,6 +1,6 @@
 # LatentMind V6
 
-An agentic analytics assistant for an Algerian telecom database (`interndb`),
+An agentic analytics assistant for an Algerian telecom database,
 built as a **LangGraph** state machine. It answers KPI questions in natural
 language, and on request charts the result, drafts an email, or fills a
 report template — while remembering the conversation across turns.
