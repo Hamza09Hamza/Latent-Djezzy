@@ -100,6 +100,19 @@ _TEMPLATE_WRAP = ["{q} and put it in a report", "generate a report of {q}",
 _FOLLOWUPS = ["and for {w}?", "what about {w}", "how about {w}",
               "now {seg}", "same for {w}", "and {w}"]
 
+# Cross-turn "just put the previous result in a report" follow-ups.
+# These are short standalone queries — no SQL intent — where prior data
+# is already in the conversation memory. The gold action is template only.
+_CROSST_TEMPLATE_QS = [
+    "put it in a report", "put that in a report", "make a report",
+    "generate a report", "save it as a report", "create a report",
+    "put this in a report", "turn it into a report", "build a report",
+    "mets-le dans un rapport", "mets ça dans un rapport",
+    "génère un rapport", "crée un rapport", "fais un rapport",
+    "dans un rapport s'il te plaît", "rapport", "un rapport",
+    "mets les résultats dans un rapport", "exporte en rapport",
+]
+
 # Performance / executive-report queries — map to fpa_profitability + global_revenue
 _PERFORMANCE_QUERIES = [
     "Q4 {t} performance summary", "Q3 {t} performance review",
@@ -324,6 +337,27 @@ def build_dataset(seed: int = 0) -> list[dict]:
         prev = pick()
         _expand(rows, "data", _fill(rng.choice(_FOLLOWUPS), kpis, rng),
                 f"Earlier question: {prev}", [_rag(), _sql_ok()])
+
+    # ── cross-turn template follow-ups ───────────────────────────────────
+    # User ran SQL in a previous turn; now just asks to put the result into
+    # a report. No rag or sql needed — data is already in memory.
+    # Gold: [template] immediately (continue=1 for the single step, then stop).
+    _data_memory = [
+        "Q: {q}\nA: gross_margin: 42.39% | 1 row",
+        "Q: {q}\nA: 24 rows returned: wilaya | avg_arpu | ...",
+        "Q: {q}\nA: total_revenue: 1,234,567.00 | 1 row",
+        "Q: {q}\nA: churn_rate: 0.0412 | avg_arpu: 3.21 | 1 row",
+        "Q: {q}\nA: 58 rows returned: wilaya | net_adds | ...",
+    ]
+    for _ in range(350):
+        mem = rng.choice(_data_memory).format(q=pick())
+        q = rng.choice(_CROSST_TEMPLATE_QS)
+        _expand(rows, "data", q, mem, [_template()])
+    # terminal stop: after template succeeds, definitely stop
+    for _ in range(200):
+        mem = rng.choice(_data_memory).format(q=pick())
+        q = rng.choice(_CROSST_TEMPLATE_QS)
+        _terminal(rows, "data", q, mem, [_template(ok=True)])
 
     # ── performance / executive-report traces ────────────────────────────
     # These map broad "Q4 performance", "quarterly results" etc. to the

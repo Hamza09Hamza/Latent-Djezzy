@@ -198,6 +198,13 @@ def route_after_brain(state: dict) -> str:
     Routing is purely brain-driven — the trained action head decides which
     step comes next. No keyword lists or hardcoded heuristics here; those
     belong in the training traces, not in the router.
+
+    Seuil semantics for terminal vs non-terminal actions:
+      Non-terminal (rag, sql): continue < SEUIL → brain is done, stop.
+      Terminal (chart, email, template): continue encodes "loop again after
+        this" — which is always low for a terminal action. We gate these on
+        action_conf instead; a confidently chosen terminal action runs even
+        when continue is low.
     """
     # Non-data intents never need an action — the communicator handles them
     # directly. Guard here so a misfiring action head can't send a greeting
@@ -209,17 +216,23 @@ def route_after_brain(state: dict) -> str:
         return "communicator"
 
     action = state.get("next_action", "")
-
-    if state.get("continue_score", 0.0) < V6Config.BRAIN_SEUIL:
-        return "communicator"
+    continue_score = state.get("continue_score", 0.0)
     conf = (state.get("brain_scores", {}) or {}).get("action_conf", 1.0)
-    if conf < V6Config.BRAIN_CONF_MIN:
-        return "communicator"
+
     if action not in _ACTIONS:
         return "communicator"
 
-    # Safety: never repeat a terminal action that already succeeded.
     _TERMINAL = {"chart", "email", "template"}
+
+    # Non-terminal actions: use continue score as the loop gate.
+    if action not in _TERMINAL and continue_score < V6Config.BRAIN_SEUIL:
+        return "communicator"
+
+    # All actions (including terminal): require minimum action confidence.
+    if conf < V6Config.BRAIN_CONF_MIN:
+        return "communicator"
+
+    # Safety: never repeat a terminal action that already succeeded this turn.
     if action in _TERMINAL:
         already_done = any(
             s.get("action") == action and s.get("ok", False)
