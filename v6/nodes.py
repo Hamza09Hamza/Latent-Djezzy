@@ -199,12 +199,12 @@ def route_after_brain(state: dict) -> str:
     step comes next. No keyword lists or hardcoded heuristics here; those
     belong in the training traces, not in the router.
 
-    Seuil semantics for terminal vs non-terminal actions:
-      Non-terminal (rag, sql): continue < SEUIL → brain is done, stop.
-      Terminal (chart, email, template): continue encodes "loop again after
-        this" — which is always low for a terminal action. We gate these on
-        action_conf instead; a confidently chosen terminal action runs even
-        when continue is low.
+    The continue score gates ALL actions, including terminals.  The brain's
+    continue head learns to output a high score when it still wants to run
+    another step (e.g. continue=0.99 before chart or email) and a low score
+    when it's done (e.g. continue=0.02 after an incidental template pick on
+    a plain data query).  Exempting terminals from the seuil would let the
+    brain accidentally trigger a report/chart on every SQL result.
     """
     # Non-data intents never need an action — the communicator handles them
     # directly. Guard here so a misfiring action head can't send a greeting
@@ -224,11 +224,14 @@ def route_after_brain(state: dict) -> str:
 
     _TERMINAL = {"chart", "email", "template"}
 
-    # Non-terminal actions: use continue score as the loop gate.
-    if action not in _TERMINAL and continue_score < V6Config.BRAIN_SEUIL:
+    # Seuil gates ALL actions — terminal and non-terminal alike.
+    # The brain's continue score tells us whether another step is warranted.
+    # An explicit "put it in a report" gets continue≈1.0; an incidental
+    # template pick after plain SQL gets continue≈0.02 — correctly blocked.
+    if continue_score < V6Config.BRAIN_SEUIL:
         return "communicator"
 
-    # All actions (including terminal): require minimum action confidence.
+    # All actions: require minimum action confidence.
     if conf < V6Config.BRAIN_CONF_MIN:
         return "communicator"
 
