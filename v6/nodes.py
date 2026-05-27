@@ -232,12 +232,13 @@ def route_after_brain(state: dict) -> str:
     if conf < V6Config.BRAIN_CONF_MIN:
         return "communicator"
 
-    # Safety: never repeat a terminal action that already succeeded this turn.
+    # Safety: never attempt the same terminal action twice in one turn, even
+    # if it failed. Prevents email/chart/template loops when the action fails.
     if action in _TERMINAL:
-        already_done = any(
-            s.get("action") == action and s.get("ok", False)
+        already_attempted = any(
+            s.get("action") == action
             for s in state.get("step_log", []))
-        if already_done:
+        if already_attempted:
             return "communicator"
 
     return action
