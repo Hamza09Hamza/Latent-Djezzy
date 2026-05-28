@@ -217,8 +217,7 @@ def _resolve_time(phrase: str) -> str | None:
 _SQLGEN_BASE = """PHASE 2 — SQL GENERATION.
 
 You now write ONE read-only SQL SELECT that answers the user's question.
-The SCHEMA block and surface inputs below tell you exactly which tables,
-columns and filters to use.
+The routing JSON above tells you which tables, columns and filters to use.
 Output ONLY the SQL statement — no JSON, no markdown, no comments (no --),
 no explanation before or after. The first character of your reply MUST be 'S'.
 Start with SELECT or WITH.
@@ -228,9 +227,9 @@ RULES (each is a hard requirement — break one and the query is rejected)
 ═══════════════════════════════════════════════════════════════════════
 
 1. MANDATORY TABLES & COLUMNS
-   Use ONLY the tables and columns listed in the SCHEMA block below.
-   Never invent a column name — if a name is not in the SCHEMA block,
-   it does not exist. The router already picked the right tables.
+   Use ONLY the tables in routing.tables and columns from those tables
+   (cross-check against the schema above). Do NOT substitute a different
+   table even if one feels closer. The router already picked them.
 
 2. WILAYA SUBQUERY — never inline location_ids
    `dim_location` is COMMUNE-level (a wilaya covers ~25 communes, up to
@@ -364,7 +363,7 @@ RULES (each is a hard requirement — break one and the query is rejected)
 FINAL CHECK before emitting (silently, in your head):
   ☐ Reply starts with SELECT or WITH — first character is 'S', no leading text.
   ☐ Uses only the routed tables.
-  ☐ Uses only the exact column names from the SCHEMA block — no invented variants.
+  ☐ Uses only the exact column names from MANDATORY COLUMNS — no invented variants.
   ☐ All wilaya filters use the subquery pattern with canonical names.
   ☐ No wilaya filter that the user did not ask for.
   ☐ Time filter uses the pre-computed literal dates from TIME FILTER block.
@@ -414,25 +413,20 @@ def build_sqlgen_instruction(query: str, routing: dict, entities: dict,
 
     surface_blocks: list[str] = []
 
-    # ── pruned inline schema — only the routed tables ─────────────────────
-    # Gives the model the exact column names right here instead of making it
-    # dig back through the KV cache. Replaces both the "MANDATORY TABLES" and
-    # "MANDATORY COLUMNS" surface blocks — one block does both jobs.
-    columns = routing.get("columns", [])
-    if tables:
-        schema_lines: list[str] = []
-        for t in tables:
-            cols = [c for c in schema.column_names(t) if c != "id"]
-            schema_lines.append(f"  {t}({', '.join(cols)})")
-        routed_cols = (
-            "\nROUTED KPI COLUMNS (the specific metrics requested): "
-            + ", ".join(f"`{c}`" for c in columns)
-            if columns else "")
+    if metric_tables:
         surface_blocks.append(
-            "SCHEMA (only the tables you need — use EXACT column names from here, "
-            "never invent variants):\n"
-            + "\n".join(schema_lines)
-            + routed_cols)
+            "MANDATORY TABLES: "
+            + ", ".join(f"`{t}`" for t in metric_tables)
+            + " (plus `dim_location` if a wilaya filter or GROUP BY "
+              "dl.wilaya is needed). Do NOT use any other table.")
+
+    columns = routing.get("columns", [])
+    if columns:
+        surface_blocks.append(
+            "MANDATORY COLUMNS (exact names — never invent variants): "
+            + ", ".join(f"`{c}`" for c in columns)
+            + "\n  Use ONLY these column names. E.g. if listed as `migration_rate`, "
+              "never write `pmigration_rate` or any other variant.")
 
     if wilayas:
         canon = ", ".join(f"'{w}'" for w in wilayas)
