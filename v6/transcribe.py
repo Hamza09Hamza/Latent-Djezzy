@@ -60,6 +60,21 @@ _KPI_BIAS_TERMS = [
     "EBITDA margin", "free cash flow", "operating cash flow",
 ]
 
+# Action / capability verbs worth priming the decoder with. A garbled verb
+# silently drops a whole capability — "Trace la tendance" misheard as "Crasse"
+# loses the chart; "Envoie … au directeur" misheard loses the email. Priming
+# the canonical imperative forms (FR + EN) makes Whisper far likelier to emit
+# them, which is more reliable than trying to repair them after the fact.
+_ACTION_BIAS_TERMS = [
+    # English
+    "plot", "chart", "graph", "show me", "compare", "trend", "top 5",
+    "email", "send", "forward", "put it in a report", "generate a report",
+    # French
+    "trace", "trace la tendance", "affiche", "montre-moi", "compare",
+    "envoie", "envoie à", "au directeur financier", "au responsable",
+    "mets dans un rapport", "génère un rapport", "tendance", "évolution",
+]
+
 # Acronyms generic Whisper reliably garbles; correction restores canonical
 # casing. Kept length >= 3 and matched at a high threshold so common short
 # words can't false-trigger. B2B/B2C added explicitly (digits, not [A-Z]+).
@@ -69,6 +84,35 @@ _KPI_ACRONYMS = ["ARPU", "EBITDA", "EBIT", "OPEX", "CAPEX", "OCF", "FCF",
 # Words that must never be rewritten into an acronym even on a fuzzy hit.
 _STOPWORDS = {"of", "off", "so", "the", "to", "too", "are", "our", "or",
               "for", "i", "a", "an", "is", "it", "be", "by", "do"}
+
+# Curated, high-confidence wilaya mishears → canonical name. These are the
+# repairs fuzzy-matching CAN'T make safely: an acoustic B/V swap ("Bejaia"→
+# "Vijaya") is lexically far (edit distance fails) yet a known, unambiguous
+# correction. Keys are pre-normalized (lowercase, no accents/apostrophes);
+# matched EXACTLY so there is zero false-positive risk — unlike lowering the
+# fuzzy threshold, which would reintroduce wrong-province errors (Mcila→Mila).
+# Add observed mishears here as they show up in the benchmark transcripts.
+_WILAYA_ALIASES = {
+    # B/V acoustic confusion
+    "vijaya": "Bejaia", "vidjaya": "Bejaia", "bijaya": "Bejaia",
+    "vejaia": "Bejaia", "wijaya": "Bejaia",
+    # dropped/!=spelling of common names
+    "wargla": "Ouargla", " wargla": "Ouargla", "wergla": "Ouargla",
+    "borge bou areridj": "Bordj Bou Arreridj",
+    "bordj bou areridj": "Bordj Bou Arreridj",
+    "mcila": "M'Sila", "msila": "M'Sila", "m sila": "M'Sila",
+    "constantin": "Constantine", "konstantin": "Constantine",
+    "tizi wuzu": "Tizi Ouzou", "tizi ouzu": "Tizi Ouzou",
+    "tlemcem": "Tlemcen", "tlemsen": "Tlemcen",
+    "wahran": "Oran", "oualid djellal": "Ouled Djellal",
+}
+
+# Quarter / period normalization. Whisper often welds "Q4 2025" into "QQ425"
+# or scatters it ("Q 4 2025"); a mangled period changes the SQL date window
+# (and, in one bench case, the GROUP BY). Snap it back to a canonical
+# "Q<n> <yyyy>" before the query reaches the router.
+_QUARTER_RE = re.compile(
+    r"\bq+\s*([1-4])\s*[\-/ ]?\s*((?:20)?\d{2})\b", re.IGNORECASE)
 
 
 # ── normalization ──────────────────────────────────────────────────────────
@@ -96,17 +140,26 @@ _bias_prompt: str | None = None
 
 
 def build_bias_prompt() -> str:
-    """The `initial_prompt` priming Whisper with wilaya + KPI vocabulary."""
+    """The `initial_prompt` priming Whisper with wilaya + KPI + action vocab.
+
+    Whisper keeps only the LAST ~224 tokens of the prompt as decoder context,
+    so ordering is by repairability: wilaya names go first (post-correction
+    can snap a near-miss back), then KPIs, then the action/capability verbs
+    LAST — those are unrepairable (a garbled "trace"/"envoie" silently drops a
+    chart/email), so they get the most-protected tail position.
+    """
     global _bias_prompt
     if _bias_prompt is not None:
         return _bias_prompt
     wilayas = ", ".join(_live_wilayas())
     kpis = ", ".join(_KPI_BIAS_TERMS)
+    actions = ", ".join(_ACTION_BIAS_TERMS)
     _bias_prompt = (
         "Conversation with the Djezzy telecom analytics assistant about "
         "Algerian wilayas and KPIs. "
         f"Wilaya names: {wilayas}. "
-        f"Metrics and terms: {kpis}.")
+        f"Metrics and terms: {kpis}. "
+        f"Requests and commands: {actions}.")
     return _bias_prompt
 
 
@@ -194,8 +247,37 @@ def correct_kpis(text: str, threshold: int = 90) -> str:
                           collapse=True, min_key_chars=3)
 
 
+def correct_wilaya_aliases(text: str) -> str:
+    """Apply the curated mishear→canonical map (exact, threshold 100).
+
+    Reuses the n-gram replacer at an exact threshold so multi-word keys like
+    'borge bou areridj' are handled, with no fuzzy false positives.
+    """
+    if not _HAS_RF or not _WILAYA_ALIASES:
+        return text
+    mapping = {normalize_text(k): v for k, v in _WILAYA_ALIASES.items()}
+    return _fuzzy_replace(text, mapping, threshold=100,
+                          scorer=fuzz.ratio, collapse=False, min_key_chars=4)
+
+
+def correct_periods(text: str) -> str:
+    """Normalize garbled quarter/year tokens to 'Q<n> <yyyy>'."""
+    def _repl(m: re.Match) -> str:
+        q, yr = m.group(1), m.group(2)
+        yr = yr if len(yr) == 4 else f"20{yr}"
+        return f"Q{q} {yr}"
+    return _QUARTER_RE.sub(_repl, text)
+
+
 def correct_transcript(text: str) -> str:
-    """Full post-correction: wilaya names first, then KPI acronyms."""
+    """Full post-correction: periods, then wilaya aliases + fuzzy, then KPIs.
+
+    Order matters: aliases run before the fuzzy wilaya pass so a known mishear
+    ('Vijaya'→'Bejaia') is fixed deterministically and the fuzzy pass then
+    sees an already-canonical name.
+    """
     if not text:
         return text
+    text = correct_periods(text)
+    text = correct_wilaya_aliases(text)
     return correct_kpis(correct_wilayas(text))

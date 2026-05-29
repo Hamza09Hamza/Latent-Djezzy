@@ -495,9 +495,21 @@ def chart_node(state: dict) -> dict:
 
 def email_node(state: dict) -> dict:
     t0 = time.time()
+    rows, cols = _data_for_artifact(state)
+    if not rows:
+        # No real data to attach — don't draft an email of nothing.
+        entry = {"action": "email", "ok": False,
+                 "error_type": "artifact_failed", "row_bucket": "none",
+                 "attempt": _attempt(state, "email")}
+        return {
+            "step_log": _step(state, entry),
+            "thoughts": _thoughts(state, {"kind": "thinking",
+                "text": "No data to send yet — skipping the email."}),
+            "trace": _trace(state, "email: skipped (no data)"),
+            "timings": _timing(state, "email_ms", (time.time() - t0) * 1000),
+        }
     draft = compose_email_draft(
-        state["query"], state.get("final_answer", ""),
-        state.get("rows", []), state.get("columns", []))
+        state["query"], state.get("final_answer", ""), rows, cols)
     ok = draft.get("status") == "draft"
     entry = {"action": "email", "ok": ok,
              "error_type": "none" if ok else "email_no_recipient",
@@ -513,12 +525,40 @@ def email_node(state: dict) -> dict:
     }
 
 
+def _data_for_artifact(state: dict) -> tuple[list, list]:
+    """Rows+columns an output capability may legitimately use.
+
+    Fresh data from THIS turn's SQL, or — only when no SQL was attempted this
+    turn (a cross-turn "put it in a report" follow-up) — the previous turn's
+    persisted rows. Crucially, when SQL WAS attempted this turn and failed,
+    we do NOT fall back to stale rows: the user asked for fresh data, and a
+    report/email built on the previous query's numbers would be confidently
+    wrong (the b14 phantom-report bug).
+    """
+    if state.get("exec_ok") and state.get("rows"):
+        return state["rows"], state.get("columns", [])
+    sql_attempted = any(s.get("action") == "sql"
+                        for s in state.get("step_log", []))
+    if not sql_attempted and state.get("last_rows"):
+        return state["last_rows"], state.get("last_columns", [])
+    return [], []
+
+
 def template_node(state: dict) -> dict:
     t0 = time.time()
-    # Fall back to the previous turn's persisted rows when the current turn
-    # didn't run SQL (e.g. "Put it in a report" as a cross-turn follow-up).
-    rows = state.get("rows") or state.get("last_rows", [])
-    cols = state.get("columns") or state.get("last_columns", [])
+    rows, cols = _data_for_artifact(state)
+    if not rows:
+        # No real data to report — never write a stale/empty document.
+        entry = {"action": "template", "ok": False,
+                 "error_type": "artifact_failed", "row_bucket": "none",
+                 "attempt": _attempt(state, "template")}
+        return {
+            "step_log": _step(state, entry),
+            "thoughts": _thoughts(state, {"kind": "thinking",
+                "text": "No data to report yet — skipping the report."}),
+            "trace": _trace(state, "template: skipped (no data)"),
+            "timings": _timing(state, "template_ms", (time.time() - t0) * 1000),
+        }
     res = fill_report(state["query"], rows, cols, state.get("final_answer", ""),
                       state.get("entities", {}))
     ok = res["ok"]
@@ -575,8 +615,15 @@ def communicator_node(state: dict) -> dict:
             # Template ran using last_rows from a prior turn — no SQL this turn.
             answer = "Report generated from the previous query result."
         else:
-            answer = ("I wasn't able to pull the data for that. Could you "
-                      "rephrase it with a clearer KPI, wilaya and period?")
+            # No usable answer and no artifact. This is reached when the
+            # router classified the query as non-data (e.g. an out-of-schema
+            # KPI like "network satisfaction score") and left final_answer
+            # empty. Be honest about scope rather than implying a rephrase
+            # would find it — and list what we CAN answer.
+            answer = ("I couldn't match that to a KPI in the database. I can "
+                      "help with revenue, ARPU, churn, subscribers, EBITDA, "
+                      "OPEX, CAPEX, or profitability — for any wilaya or "
+                      "period.")
 
     # capability notes
     notes: list[str] = []

@@ -358,6 +358,10 @@ def send_email(draft: dict, smtp_host: str | None = None,
 def fill_report(query: str, rows: list[dict], columns: list[str],
                 answer: str, entities: dict | None = None) -> dict:
     """Render the report template with the data and write it to disk."""
+    if not rows:
+        # Defensive: a report with no rows is a confidently-empty document.
+        # Callers (template_node) gate on this too, but never write nothing.
+        return {"ok": False, "path": "", "error": "no data to report"}
     try:
         table = _markdown_table(rows, columns, limit=50)
         content = _env.get_template("report.md.j2").render(

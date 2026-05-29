@@ -65,6 +65,72 @@ def wer(reference: str, hypothesis: str) -> float:
     return round(prev[-1] / len(ref), 3)
 
 
+# ── polishing: turn the raw graph answer into the spoken/written text ───────
+# The pipeline's final_answer for data is a raw row dump (_summarize_rows);
+# what the USER hears is that dump rewritten by slm.Polisher (the analyst that
+# applies the spoken-number rounding rule). graph.invoke() never runs it, so
+# without this the review table shows raw figures and the rounding fix is
+# invisible. We mirror the notebook's _pick_role routing exactly.
+_CLARIFY_MARKERS = (
+    "couldn't build", "failed to run", "no matching rows", "wasn't able to pull",
+    "no data found", "couldn't match", "not sure which kpi", "isn't in the database",
+)
+
+
+def _spoken_role(row: dict) -> tuple[str | None, str]:
+    """(role, text) for the polisher — None means speak the text verbatim.
+
+    Identical logic to the notebook's _pick_role so the benchmark grades the
+    same answer the live voice/text path produces.
+    """
+    intent = row.get("pred_intent") or "data"
+    answer = row.get("answer", "") or ""
+    exec_ok = bool(row.get("exec_ok"))
+    if intent in ("greeting", "meta"):
+        # Warm 'chat' persona responds to the utterance, not a canned blurb.
+        return "chat", answer
+    if intent in ("definition", "unanswerable"):
+        return "polish", answer
+    if row.get("document_path") and not exec_ok:
+        return None, "Report generated from the previous result."
+    low = answer.lower()
+    if not exec_ok or any(p in low for p in _CLARIFY_MARKERS):
+        return "clarify", answer
+    # data with rows — strip artifact notes, analyse the figures
+    data_part = answer.split("📧")[0].split("📊")[0].split("📄")[0].strip()
+    return "analyze", data_part
+
+
+def _polish_rows(rows: list[dict], enabled: bool = True) -> list[dict]:
+    """Attach `spoken` (the polished answer) to every row.
+
+    Degrades gracefully: if the polisher can't load (no GPU / model), `spoken`
+    falls back to the raw answer so the rest of the benchmark still runs.
+    """
+    if not enabled:
+        for r in rows:
+            r["spoken"] = r.get("answer", "")
+        return rows
+    try:
+        from v6.slm import get_polisher
+        pol = get_polisher()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  (polisher unavailable: {exc} — showing raw answers)")
+        for r in rows:
+            r["spoken"] = r.get("answer", "")
+        return rows
+    for r in rows:
+        role, text = _spoken_role(r)
+        if role is None:
+            r["spoken"] = text
+            continue
+        try:
+            r["spoken"] = "".join(pol.stream(text, r["text"], role)).strip()
+        except Exception:  # noqa: BLE001 — a single polish failure isn't fatal
+            r["spoken"] = text
+    return rows
+
+
 # ── per-stage latency extraction ────────────────────────────────────────────
 def _stage_ms(timings: dict) -> dict:
     brain = sum(v for k, v in timings.items() if k.startswith("brain"))
@@ -240,8 +306,12 @@ def print_report(rows: list[dict], stt_rows: list[dict] | None = None) -> None:
                   f"corrected   avg STT latency: {avg_stt:.0f}ms")
 
     # manual-review block
+    has_spoken = any("spoken" in r for r in rows)
     print("\n" + "=" * 78)
-    print(" ANSWER REVIEW — verify each by hand (polisher rephrases freely)")
+    if has_spoken:
+        print(" ANSWER REVIEW — SPOKEN text (what the user hears, post-polish)")
+    else:
+        print(" ANSWER REVIEW — raw answers (polisher not run)")
     print("=" * 78)
     for r in rows:
         artifacts = []
@@ -254,7 +324,68 @@ def print_report(rows: list[dict], stt_rows: list[dict] | None = None) -> None:
         tag = f"  [{', '.join(artifacts)}]" if artifacts else ""
         print(f"\n[{r['id']}] ({r['lang']}) {r['text']}")
         print(f"   expect : {r['expects']}")
-        print(f"   answer : {r['answer'][:300]}{tag}")
+        if has_spoken:
+            print(f"   spoken : {r.get('spoken', '')[:300]}{tag}")
+            print(f"   (raw)  : {r['answer'][:120]}")
+        else:
+            print(f"   answer : {r['answer'][:300]}{tag}")
+
+
+# ── voice-vs-text regression diff ────────────────────────────────────────────
+def _artifact_set(row: dict) -> set[str]:
+    s: set[str] = set()
+    if row.get("chart_path"):
+        s.add("chart")
+    if row.get("document_path"):
+        s.add("report")
+    if row.get("email_status") == "draft":
+        s.add("email")
+    return s
+
+
+def print_regressions(text_rows: list[dict], voice_rows: list[dict]) -> None:
+    """Flag the queries whose voice result diverged from the clean-text result.
+
+    Compares intent, the artifact set (chart/report/email), and SQL exec per
+    query id, so the ~4-5 queries STT noise actually broke jump out instead of
+    being buried in two 20-row tables. Stable queries are not printed.
+    """
+    tmap = {r["id"]: r for r in text_rows}
+    regs: list[tuple[dict, list[str]]] = []
+    for v in voice_rows:
+        t = tmap.get(v["id"])
+        if not t:
+            continue
+        changes: list[str] = []
+        if t["pred_intent"] != v["pred_intent"]:
+            changes.append(f"intent {t['pred_intent']} → {v['pred_intent']}")
+        ta, va = _artifact_set(t), _artifact_set(v)
+        if ta != va:
+            changes.append(f"artifacts {'+'.join(sorted(ta)) or '—'} → "
+                           f"{'+'.join(sorted(va)) or '—'}")
+        if bool(t["exec_ok"]) != bool(v["exec_ok"]):
+            changes.append(f"exec {'ok' if t['exec_ok'] else 'fail'} → "
+                           f"{'ok' if v['exec_ok'] else 'fail'}")
+        if changes:
+            regs.append((v, changes))
+
+    print("\n" + "=" * 78)
+    print(" VOICE vs TEXT — REGRESSIONS (only diverging queries shown)")
+    print("=" * 78)
+    if not regs:
+        print(f"  none — all {len(voice_rows)} queries stable under voice ✓")
+        return
+    for v, changes in regs:
+        wer_v = v.get("transcript_wer", 0.0)
+        print(f"\n[{v['id']}] ({v['lang']}) WER {wer_v:.2f}")
+        if v.get("transcript") and v.get("original_text"):
+            print(f"   said  : {v['original_text']}")
+            print(f"   heard : {v['transcript']}")
+        for c in changes:
+            print(f"   ⚠ {c}")
+    print("-" * 78)
+    print(f"  {len(regs)} of {len(voice_rows)} queries regressed under voice  ·  "
+          f"{len(voice_rows) - len(regs)} stable")
 
 
 def _save(rows: list[dict], stt_rows: list[dict] | None) -> str:
@@ -267,21 +398,33 @@ def _save(rows: list[dict], stt_rows: list[dict] | None) -> str:
 
 
 # ── entry points ─────────────────────────────────────────────────────────────
-def run_text_benchmark(agent, save: bool = True) -> list[dict]:
-    """Run the 20 queries through the text pipeline; print + save metrics."""
+def run_text_benchmark(agent, save: bool = True,
+                       polish: bool = True) -> list[dict]:
+    """Run the 20 queries through the text pipeline; print + save metrics.
+
+    With `polish=True` the raw graph answer is rewritten by the analyst/
+    polisher exactly as the live system does, so the ANSWER REVIEW shows the
+    spoken text (and you can verify the number-rounding rule). Set False to
+    skip the polisher (faster, raw figures shown).
+    """
     rows = []
     for q in load_queries():
         print(f"  · running {q['id']} [{q['lang']}] {q['text'][:50]}")
         rows.append(_run_one(agent, q))
+    if polish:
+        print("  · polishing answers (analyst rewrite for the review)…")
+    _polish_rows(rows, enabled=polish)
     print_report(rows)
     if save:
         print(f"\n  saved → {_save(rows, None)}")
     return rows
 
 
-def run_full(agent, transcribe: bool = True, save: bool = True) -> dict:
+def run_full(agent, transcribe: bool = True, save: bool = True,
+             polish: bool = True) -> dict:
     """Full benchmark: text pipeline + (optional) STT round-trip on fixtures."""
     rows = [_run_one(agent, q) for q in load_queries()]
+    _polish_rows(rows, enabled=polish)
     stt_rows = transcribe_fixtures() if transcribe else None
     print_report(rows, stt_rows)
     if save:
@@ -290,13 +433,17 @@ def run_full(agent, transcribe: bool = True, save: bool = True) -> dict:
 
 
 def run_voice_benchmark(agent, audio_dir: str | None = None,
-                        save: bool = True) -> list[dict]:
+                        save: bool = True, polish: bool = True,
+                        text_rows: list[dict] | None = None) -> list[dict]:
     """End-to-end voice benchmark: .wav → STT → pipeline → answer.
 
     This is the realistic test: each audio file is transcribed (with biasing
     + post-correction), the transcript drives the pipeline, and results are
     graded exactly like run_text_benchmark. Comparing the two reveals how
     much STT noise degrades pipeline accuracy.
+
+    Pass `text_rows` (the return of run_text_benchmark) to print a
+    voice-vs-text REGRESSIONS table — the queries STT noise actually broke.
 
     Audio files must already exist — run generate_audio_fixtures() first.
     """
@@ -333,10 +480,16 @@ def run_voice_benchmark(agent, audio_dir: str | None = None,
         rows.append(row)
 
     # Print same report format; label it as voice-driven
+    if polish:
+        print("  · polishing answers (analyst rewrite for the review)…")
+    _polish_rows(rows, enabled=polish)
     print("\n" + "=" * 78)
     print(" VOICE BENCHMARK — .wav → STT → pipeline (end-to-end)")
     print("=" * 78)
     print_report(rows)
+
+    if text_rows:
+        print_regressions(text_rows, rows)
 
     if save:
         stamp = time.strftime("%Y%m%d_%H%M%S")

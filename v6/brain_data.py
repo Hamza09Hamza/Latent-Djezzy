@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 
 from .config import V6Config
 
@@ -83,7 +84,13 @@ _META = [
 _FAKE_KPIS = ["quantum score", "blockchain ratio", "customer happiness index",
               "satellite uptime", "employee morale rate", "stock price",
               "carbon footprint", "brand sentiment score", "nps trend",
-              "website traffic"]
+              "website traffic",
+              # out-of-schema metrics that LOOK like real telecom KPIs — the
+              # hardest unanswerables (the b16 "network satisfaction" miss).
+              "network satisfaction score", "satisfaction score",
+              "customer satisfaction", "net promoter score",
+              "service quality index", "network coverage rating",
+              "call drop rate", "complaint resolution time"]
 _UNANSWERABLE_TEMPLATES = [
     "what is the {fake}", "show me the {fake}", "give me the {fake} for {w}",
     "what was the {fake} {t}",
@@ -128,6 +135,84 @@ _PERFORMANCE_QUERIES = [
 ]
 
 
+# ── French templates ──────────────────────────────────────────────────────
+# The benchmark and real users mix French freely, but the brain's traces were
+# almost all English — so French capability VERBS (Trace / Envoie / Mets dans
+# un rapport) were under-trained and STT noise tipped them (b10 chart lost,
+# b12 email→report). These mirror the English shapes in French.
+_TIMES_FR = ["", "", "", "le mois dernier", "le trimestre dernier",
+             "cette année", "la semaine dernière", "récemment"]
+_SEGMENTS_FR = ["", "", "prépayés", "postpayés"]
+_KPI_FR = ["revenu", "revenu net", "revenu total", "marge brute", "ARPU",
+           "taux de désabonnement", "abonnés", "EBITDA", "OPEX", "CAPEX",
+           "part de marché", "taux de migration", "taux de recharge",
+           "bénéfice net", "chiffre d'affaires"]
+_DATA_TEMPLATES_FR = [
+    "quel est le {kpi} à {w}", "quel était le {kpi} à {w} {tf}",
+    "montre le {kpi} pour les abonnés {segf}", "tendance du {kpi} pour {segf}",
+    "compare le {kpi} entre {w} et {w2}", "{kpi} moyen {tf}",
+    "combien de {kpi} {w} a enregistré {tf}", "quelle wilaya a le plus de {kpi}",
+    "{kpi} total {tf}", "{kpi} par wilaya", "donne-moi le {kpi} pour {w}",
+    "{kpi} à {w} {tf}", "top 5 des wilayas par {kpi}", "{kpi} {segf} {tf}",
+]
+_DEF_TEMPLATES_FR = [
+    "c'est quoi le {kpi}", "c'est quoi exactement le {kpi}",
+    "que veut dire {kpi}", "définis le {kpi}", "explique le {kpi}",
+    "qu'est-ce que le {kpi}", "que signifie {kpi}",
+]
+_VIZ_WRAP_FR = ["trace {q}", "trace la tendance de {q}", "affiche {q}",
+                "montre-moi {q} sous forme de graphique", "{q} en graphique",
+                "trace l'évolution de {q}", "fais un graphique de {q}"]
+_EMAIL_WRAP_FR = ["envoie {q} au directeur financier",
+                  "envoie {q} au responsable des opérations",
+                  "envoie {q} à Sarah", "{q} et envoie-le à l'équipe",
+                  "transfère {q} au manager"]
+_EMAIL_WRAP_NORECIP_FR = ["envoie {q} par email", "envoie {q}",
+                          "{q} — envoie ça par mail", "envoie {q} par mail"]
+_TEMPLATE_WRAP_FR = ["{q} et mets-le dans un rapport",
+                     "génère un rapport de {q}", "mets {q} dans un rapport",
+                     "{q} sous forme de rapport"]
+_FOLLOWUPS_FR = ["et pour {w} ?", "et à {w}", "pareil pour {w}",
+                 "et {w} ?", "maintenant {segf}", "et le {segf} ?"]
+_UNANSWERABLE_TEMPLATES_FR = [
+    "quel est le {fakef}", "montre-moi le {fakef}",
+    "donne-moi le {fakef} pour {w}", "quel était le {fakef} {tf}",
+]
+_FAKE_KPIS_FR = ["score de satisfaction réseau", "indice de satisfaction client",
+                 "score de satisfaction", "cours de l'action",
+                 "empreinte carbone", "note de qualité de service",
+                 "taux de couverture réseau", "score NPS",
+                 "temps de résolution des plaintes"]
+
+# ── noise augmentation ──────────────────────────────────────────────────────
+# Meaning-preserving STT-style perturbations. We NEVER touch the action verb
+# (it carries the capability signal); only entities, the word "wilaya", and
+# punctuation/casing are perturbed — exactly the noise that flipped borderline
+# decisions between the clean-text and voice runs.
+_WILAYA_MISSPELL = {
+    "Bejaia": ["Vijaya", "Bejaya", "Bijaya"], "Setif": ["Sétif", "Setiff"],
+    "Tlemcen": ["Tlemcem", "Tlemsen"], "Ouargla": ["Wargla", "Ouergla"],
+    "Tizi Ouzou": ["Tizi Ouzu", "Tizi Wuzu"], "Annaba": ["Anaba"],
+    "Constantine": ["Constantin"], "Mostaganem": ["Mostaganem"],
+}
+
+
+def _noise(q: str, rng: random.Random) -> str:
+    """A meaning-preserving perturbation of a query (label unchanged)."""
+    out = q
+    for canon, variants in _WILAYA_MISSPELL.items():
+        if canon.lower() in out.lower() and rng.random() < 0.5:
+            out = re.sub(re.escape(canon), rng.choice(variants), out,
+                         flags=re.IGNORECASE)
+    if "wilaya" in out and rng.random() < 0.4:
+        out = out.replace("wilaya", rng.choice(["willaya", "walaya"]))
+    if rng.random() < 0.5:
+        out = out + "?"
+    if rng.random() < 0.25:
+        out = out.capitalize()
+    return _norm(out)
+
+
 def _kpi_terms() -> list[str]:
     terms: set[str] = set()
     if os.path.isfile(V6Config.KPI_CATALOG_PATH):
@@ -145,10 +230,13 @@ def _norm(q: str) -> str:
 
 
 def _fill(template: str, kpis: list[str], rng: random.Random) -> str:
+    # All slot kinds are always supplied; .format() consumes only the ones the
+    # template references, so English and French templates share this helper.
     return _norm(template.format(
         kpi=rng.choice(kpis), w=rng.choice(_WILAYAS), w2=rng.choice(_WILAYAS),
         t=rng.choice(_TIMES), seg=rng.choice(_SEGMENTS),
-        fake=rng.choice(_FAKE_KPIS)))
+        tf=rng.choice(_TIMES_FR), segf=rng.choice(_SEGMENTS_FR),
+        fake=rng.choice(_FAKE_KPIS), fakef=rng.choice(_FAKE_KPIS_FR)))
 
 
 def _proto(intent: str) -> list[str]:
@@ -410,6 +498,88 @@ def build_dataset(seed: int = 0) -> list[dict]:
                             kpi="performance", seg="", fake=""))
         _terminal(rows, "data", q, "",
                   [_rag(), _sql_ok(), _template(ok=True)])
+
+    # ── French traces ────────────────────────────────────────────────────
+    # Mirror the English shapes so French capability verbs are well-trained.
+    kpis_fr = sorted(set(kpis) | set(_KPI_FR))
+    base_fr = [_fill(rng.choice(_DATA_TEMPLATES_FR), kpis_fr, rng)
+               for _ in range(260)]
+
+    def pick_fr() -> str:
+        return rng.choice(base_fr)
+
+    # French definitions
+    for _ in range(90):
+        _expand(rows, "definition",
+                _norm(rng.choice(_DEF_TEMPLATES_FR).format(
+                    kpi=rng.choice(kpis_fr))), "", [_rag()])
+    # French plain data
+    for _ in range(150):
+        _expand(rows, "data", pick_fr(), "", [_rag(), _sql_ok()])
+    for _ in range(40):
+        _expand(rows, "data", pick_fr(), "", [_rag(), _sql_norows()])
+    # French data + chart
+    for _ in range(130):
+        _expand(rows, "data", rng.choice(_VIZ_WRAP_FR).format(q=pick_fr()),
+                "", [_rag(), _sql_ok(), _chart()])
+    for _ in range(150):
+        q = rng.choice(_VIZ_WRAP_FR).format(q=pick_fr())
+        _terminal(rows, "data", q, "", [_rag(), _sql_ok(), _chart(ok=True)])
+    # French data + email
+    for _ in range(110):
+        _expand(rows, "data", rng.choice(_EMAIL_WRAP_FR).format(q=pick_fr()),
+                "", [_rag(), _sql_ok(), _email()])
+    for _ in range(120):
+        q = rng.choice(_EMAIL_WRAP_FR).format(q=pick_fr())
+        _terminal(rows, "data", q, "", [_rag(), _sql_ok(), _email(ok=True)])
+    for _ in range(60):
+        _expand(rows, "data",
+                rng.choice(_EMAIL_WRAP_NORECIP_FR).format(q=pick_fr()),
+                "", [_rag(), _sql_ok(), _email(ok=False)])
+    # French data + report
+    for _ in range(130):
+        _expand(rows, "data", rng.choice(_TEMPLATE_WRAP_FR).format(q=pick_fr()),
+                "", [_rag(), _sql_ok(), _template()])
+    for _ in range(150):
+        q = rng.choice(_TEMPLATE_WRAP_FR).format(q=pick_fr())
+        _terminal(rows, "data", q, "", [_rag(), _sql_ok(), _template(ok=True)])
+    # French follow-ups
+    for _ in range(100):
+        prev = pick_fr()
+        _expand(rows, "data", _fill(rng.choice(_FOLLOWUPS_FR), kpis_fr, rng),
+                f"Question précédente : {prev}", [_rag(), _sql_ok()])
+    # French unanswerable (out-of-schema KPIs that look real)
+    for _ in range(70):
+        _expand(rows, "unanswerable",
+                _fill(rng.choice(_UNANSWERABLE_TEMPLATES_FR), kpis_fr, rng),
+                "", [])
+    # extra English unanswerable concentrating on the new look-real fakes
+    for _ in range(40):
+        _expand(rows, "unanswerable",
+                _fill(rng.choice(_UNANSWERABLE_TEMPLATES), kpis, rng), "", [])
+
+    # ── noise augmentation ───────────────────────────────────────────────
+    # Same gold labels, STT-perturbed queries (EN + FR). Broadens embedding
+    # coverage so a misspelled wilaya or trailing "?" doesn't flip a decision.
+    noisy_pool = base + base_fr
+    for _ in range(240):
+        _expand(rows, "data", _noise(rng.choice(noisy_pool), rng), "",
+                [_rag(), _sql_ok()])
+    for _ in range(120):
+        src = rng.choice(_VIZ_WRAP + _VIZ_WRAP_FR).format(
+            q=rng.choice(noisy_pool))
+        _expand(rows, "data", _noise(src, rng), "",
+                [_rag(), _sql_ok(), _chart()])
+    for _ in range(120):
+        src = rng.choice(_EMAIL_WRAP + _EMAIL_WRAP_FR).format(
+            q=rng.choice(noisy_pool))
+        _expand(rows, "data", _noise(src, rng), "",
+                [_rag(), _sql_ok(), _email()])
+    for _ in range(120):
+        src = rng.choice(_TEMPLATE_WRAP + _TEMPLATE_WRAP_FR).format(
+            q=rng.choice(noisy_pool))
+        _expand(rows, "data", _noise(src, rng), "",
+                [_rag(), _sql_ok(), _template()])
 
     rng.shuffle(rows)
     return rows
