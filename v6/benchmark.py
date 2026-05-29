@@ -287,3 +287,63 @@ def run_full(agent, transcribe: bool = True, save: bool = True) -> dict:
     if save:
         print(f"\n  saved → {_save(rows, stt_rows)}")
     return {"pipeline": rows, "stt": stt_rows, "summary": _agg(rows)}
+
+
+def run_voice_benchmark(agent, audio_dir: str | None = None,
+                        save: bool = True) -> list[dict]:
+    """End-to-end voice benchmark: .wav → STT → pipeline → answer.
+
+    This is the realistic test: each audio file is transcribed (with biasing
+    + post-correction), the transcript drives the pipeline, and results are
+    graded exactly like run_text_benchmark. Comparing the two reveals how
+    much STT noise degrades pipeline accuracy.
+
+    Audio files must already exist — run generate_audio_fixtures() first.
+    """
+    from v6.speech import get_stt
+    from v6.transcribe import correct_transcript
+
+    audio_dir = audio_dir or V6Config.audio_dir()
+    stt = get_stt()
+    queries = load_queries()
+    rows: list[dict] = []
+
+    for q in queries:
+        wav = os.path.join(audio_dir, f"bench_{q['id']}.wav")
+        if not os.path.isfile(wav):
+            print(f"  ✗ {q['id']} — audio missing ({wav}); skipping")
+            continue
+
+        # STT → corrected transcript
+        res = stt.transcribe(wav, language=q["lang"])
+        transcript = res["text"]          # already corrected by transcribe.py
+        raw = res.get("raw_text", transcript)
+        transcript_wer = wer(q["text"], transcript)
+
+        print(f"  🎙 {q['id']} [{q['lang']}] "
+              f"WER {transcript_wer:.2f}  hyp: {transcript[:50]}")
+
+        # Run the pipeline with the STT transcript instead of the clean text
+        voice_q = dict(q, text=transcript)  # swap in the transcript
+        row = _run_one(agent, voice_q)
+        row["transcript"] = transcript
+        row["raw_transcript"] = raw
+        row["transcript_wer"] = transcript_wer
+        row["original_text"] = q["text"]
+        rows.append(row)
+
+    # Print same report format; label it as voice-driven
+    print("\n" + "=" * 78)
+    print(" VOICE BENCHMARK — .wav → STT → pipeline (end-to-end)")
+    print("=" * 78)
+    print_report(rows)
+
+    if save:
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(V6Config.output_dir(),
+                            f"bench_voice_{stamp}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"voice_pipeline": rows, "summary": _agg(rows)},
+                      f, ensure_ascii=False, indent=2)
+        print(f"\n  saved → {path}")
+    return rows
