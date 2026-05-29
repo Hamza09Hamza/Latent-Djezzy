@@ -40,7 +40,12 @@ from .config import V6Config
 from .knowledge import get_encoder
 
 # ── vocabularies ─────────────────────────────────────────────────────────
-INTENTS = ["greeting", "meta", "definition", "data", "unanswerable"]
+# `off_topic` is distinct from `meta`: meta ("what can you do") gets a warm
+# capability reply through the chat persona, whereas off_topic ("write me
+# code", "what's the weather") gets a DETERMINISTIC canned deflection in the
+# communicator — never routed through the polisher, so a small model can't be
+# talked into actually writing the code/translation.
+INTENTS = ["greeting", "meta", "definition", "data", "unanswerable", "off_topic"]
 ACTIONS = ["rag", "sql", "chart", "email", "template"]
 ERRORS = ["none", "sql_error", "sql_no_rows", "sql_no_query",
           "email_no_recipient", "artifact_failed", "rag_weak"]

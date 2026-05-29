@@ -29,7 +29,7 @@ from .orchestrator import assemble
 from .prompts import (build_router_messages, build_sqlgen_instruction,
                       parse_router_output)
 from .schema import get_db_schema
-from .slm import get_slm
+from .slm import get_slm, lang_code
 from .sql_tools import (clean_sql, consistency_check, correction_hint,
                         enforce_limit, execute_sql, validate_sql)
 
@@ -210,7 +210,7 @@ def route_after_brain(state: dict) -> str:
     # directly. Guard here so a misfiring action head can't send a greeting
     # or unanswerable query into the SQL pipeline.
     intent = state.get("intent", "")
-    if intent in ("greeting", "meta", "definition", "unanswerable"):
+    if intent in ("greeting", "meta", "definition", "unanswerable", "off_topic"):
         return "communicator"
     if state.get("brain_step", 0) >= V6Config.BRAIN_MAX_STEPS:
         return "communicator"
@@ -592,6 +592,25 @@ _UNANSWERABLE_TEXT = (
     "That metric isn't in the database. I can answer questions about "
     "revenue, ARPU, churn, subscribers, EBITDA, OPEX, CAPEX, or "
     "profitability — for any Algerian wilaya or time period.")
+# Off-topic deflection — DETERMINISTIC and language-aware. Off-topic requests
+# (code, translation, trivia, advice) are answered with this fixed text and
+# NEVER routed through the polisher, so a small model cannot be coaxed into
+# actually writing the code/translation. Keyed by lang_code(query).
+_OFFTOPIC_TEXT = {
+    "en": ("That's outside what I do — I'm the Djezzy telecom analytics "
+           "assistant. I can help with KPIs like revenue, ARPU, churn, "
+           "subscribers, EBITDA, OPEX or CAPEX for any wilaya or period, and I "
+           "can chart, email, or report the results."),
+    "fr": ("Cela ne fait pas partie de mon domaine — je suis l'assistant "
+           "d'analyse télécom de Djezzy. Je peux vous aider sur des indicateurs "
+           "comme le revenu, l'ARPU, le taux de désabonnement, les abonnés, "
+           "l'EBITDA, l'OPEX ou le CAPEX, pour n'importe quelle wilaya ou "
+           "période, et générer un graphique, un email ou un rapport."),
+    "ar": ("هذا خارج نطاق عملي — أنا مساعد تحليلات جيزي للاتصالات. يمكنني "
+           "مساعدتك في مؤشرات مثل الإيرادات وARPU ومعدل التسرّب والمشتركين "
+           "وEBITDA وOPEX أو CAPEX لأي ولاية أو فترة، كما يمكنني إنشاء رسم "
+           "بياني أو بريد إلكتروني أو تقرير."),
+}
 
 
 def communicator_node(state: dict) -> dict:
@@ -610,6 +629,9 @@ def communicator_node(state: dict) -> dict:
             "rate, active base, total revenue, EBITDA, OPEX or CAPEX.")
     elif intent == "unanswerable":
         answer = _UNANSWERABLE_TEXT
+    elif intent == "off_topic":
+        # Fixed, language-matched deflection — never sent to the polisher.
+        answer = _OFFTOPIC_TEXT.get(lang_code(state["query"]), _OFFTOPIC_TEXT["en"])
     elif not answer:
         if state.get("document_path"):
             # Template ran using last_rows from a prior turn — no SQL this turn.

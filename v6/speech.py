@@ -45,22 +45,12 @@ os.environ.setdefault("COQUI_TOS_AGREED", "1")
 def language_for(text: str) -> str:
     """Map free text to an XTTS / Whisper language code: 'fr', 'ar', or 'en'.
 
-    Arabic script → 'ar'; a couple of French function words or 'salam' → 'fr';
-    everything else → 'en'. Mirrors slm.detect_lang but returns ISO codes the
-    speech models expect.
+    Delegates to slm.lang_code — the single source of truth — so the spoken
+    language always matches the language the chat persona and the off-topic
+    deflection were written in.
     """
-    if any("؀" <= c <= "ۿ" for c in text):
-        return "ar"
-    french = {
-        "est", "que", "qui", "les", "des", "pour", "dans", "avec", "sur",
-        "du", "la", "le", "un", "une", "comment", "quoi", "quel", "quelle",
-        "montre", "affiche", "peux", "faire", "donne", "combien", "moi",
-        "mois", "année", "trimestre", "dernier", "dernière", "ce", "cette",
-    }
-    words = set(text.lower().replace("'", " ").replace("?", " ").split())
-    if len(words & french) >= 2 or "salam" in text.lower():
-        return "fr"
-    return "en"
+    from .slm import lang_code
+    return lang_code(text)
 
 
 # ── sentence buffering for streaming TTS ──────────────────────────────────

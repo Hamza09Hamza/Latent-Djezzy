@@ -186,6 +186,7 @@ def test_brain():
     for query, intent in [("hello", "greeting"),
                           ("what does ARPU mean", "definition"),
                           ("what can you do", "meta"),
+                          ("write me a python function", "off_topic"),
                           ("what was the total revenue in Oran", "data")]:
         d = b.decide(query, "", [])
         check(f"intent('{query[:32]}') == {intent}", d.intent == intent,

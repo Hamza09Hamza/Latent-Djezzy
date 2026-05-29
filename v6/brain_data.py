@@ -414,15 +414,17 @@ def build_dataset(seed: int = 0) -> list[dict]:
     for m in sorted(set(_META) | set(_proto("meta"))):
         _expand(rows, "meta", m, "", [])
 
-    # off-topic / out-of-scope — labeled `meta` so it routes to the chat
-    # persona's scope guard (never the SQL pipeline). gold=[] → stop at step 0.
-    # The uniques anchor the region; a noised batch broadens it so casing /
-    # punctuation / a stray wilaya name can't flip the decision.
+    # off-topic / out-of-scope — its OWN intent so the communicator can give a
+    # deterministic canned deflection (never routed through the polisher, so a
+    # small model can't be coaxed into writing the code/translation). gold=[]
+    # → stop at step 0 → communicator. The uniques anchor the region; a noised
+    # batch broadens it so casing / punctuation / a stray wilaya name can't flip
+    # the decision.
     offtopic = sorted(set(_OFFTOPIC) | set(_OFFTOPIC_FR) | set(_proto("off_topic")))
     for q in offtopic:
-        _expand(rows, "meta", q, "", [])
+        _expand(rows, "off_topic", q, "", [])
     for _ in range(140):
-        _expand(rows, "meta", _noise(rng.choice(offtopic), rng), "", [])
+        _expand(rows, "off_topic", _noise(rng.choice(offtopic), rng), "", [])
 
     # definition — gold=[rag], then communicator
     for _ in range(112):

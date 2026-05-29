@@ -86,6 +86,9 @@ def _spoken_role(row: dict) -> tuple[str | None, str]:
     intent = row.get("pred_intent") or "data"
     answer = row.get("answer", "") or ""
     exec_ok = bool(row.get("exec_ok"))
+    if intent == "off_topic":
+        # Deterministic deflection — spoken verbatim, never via the polisher.
+        return None, answer
     if intent in ("greeting", "meta"):
         # Warm 'chat' persona responds to the utterance, not a canned blurb.
         return "chat", answer

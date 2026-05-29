@@ -17,6 +17,7 @@ Colab knobs (env, see config.py): V6_4BIT, V6_FLASH_ATTN, V6_SLM_OVERRIDE.
 """
 
 from __future__ import annotations
+import re
 import threading
 import time
 
@@ -339,20 +340,47 @@ def get_slm() -> DualRoleSLM:
     return _slm
 
 
+# French detection markers. A STRONG marker (courtesy word, question word,
+# capability verb) flips to French on its own; WEAK function words need two.
+# A single strong word is what lets "Merci beaucoup !" be detected as French
+# even though it has no weak function words.
+_FR_STRONG = {
+    "bonjour", "bonsoir", "merci", "salut", "salam", "svp", "voilà", "désolé",
+    "coucou", "pourquoi", "combien", "quel", "quelle", "quels", "quelles",
+    "montre", "montrez", "affiche", "affichez", "envoie", "envoyez", "trace",
+    "tracez", "donne", "donnez", "rapport", "graphique", "abonnés", "revenu",
+    "rémunération", "désabonnement",
+}
+_FR_WEAK = {
+    "est", "que", "qui", "les", "des", "pour", "dans", "avec", "sur", "par",
+    "du", "la", "le", "un", "une", "comment", "quoi", "moi", "mois", "année",
+    "trimestre", "dernier", "dernière", "ce", "cette", "ça", "vous", "je",
+    "tu", "et", "ne", "pas", "peux", "pouvez", "faire", "veut", "dire",
+}
+
+
+def lang_code(text: str) -> str:
+    """ISO code for the dominant language: 'ar', 'fr', or 'en'.
+
+    Single source of truth for language selection — used by the chat persona,
+    the off-topic deflection, and (via speech.language_for) the TTS voice, so
+    the spoken language always matches the written one.
+    """
+    t = text or ""
+    if any('؀' <= c <= 'ۿ' for c in t):
+        return "ar"
+    words = set(re.sub(r"[^\w\s]", " ", t.lower(), flags=re.UNICODE).split())
+    if words & _FR_STRONG or len(words & _FR_WEAK) >= 2:
+        return "fr"
+    return "en"
+
+
+_LANG_NAME = {"ar": "Algerian Darija (Arabic)", "fr": "French", "en": "English"}
+
+
 def detect_lang(text: str) -> str:
-    """Detect query language: Arabic script → Darija, French vocab → French, else English."""
-    if any('؀' <= c <= 'ۿ' for c in text):
-        return "Algerian Darija (Arabic)"
-    french = {
-        'est', 'que', 'qui', 'les', 'des', 'pour', 'dans', 'avec', 'sur', 'par',
-        'du', 'la', 'le', 'un', 'une', 'comment', 'quoi', 'quel', 'quelle',
-        'montre', 'affiche', 'peux', 'faire', 'pouvez', 'montrez', 'donne',
-        'combien', 'quels', 'moi', 'mois', 'année', 'quel', 'trimestre',
-    }
-    words = set(text.lower().replace("'", " ").replace("?", " ").split())
-    if len(words & french) >= 2 or 'salam' in text.lower():
-        return "French"
-    return "English"
+    """Human-readable language name for prompting the polisher."""
+    return _LANG_NAME[lang_code(text)]
 
 
 # ── Analyst: turns raw SQL rows into an analytical paragraph ─────────────────
@@ -441,46 +469,39 @@ subscribers." (that's just the reference line read back)
 Write the rewritten response now."""
 
 
-# ── Chat: warm, personable replies to greetings, small talk, "what can you do" ─
-_CHAT_SYSTEM = """You are the Djezzy Voice Assistant — a warm, personable
-telecom analytics agent for the Algerian market. The user has said something
-conversational: a greeting, small talk, a thank-you, or a question about you.
-Reply like a friendly, capable colleague — natural and human, never robotic,
-never a canned script.
+# ── Chat: professional, courteous replies to greetings, thanks, "what can you do" ─
+_CHAT_SYSTEM = """You are the Djezzy Voice Assistant — a professional telecom
+analytics agent for the Algerian market. The user has said something
+conversational: a greeting, a thank-you, small talk, or a question about you.
+Reply like a courteous, competent colleague.
 
 RULES:
-1. Reply in the SAME LANGUAGE the user used (French → French, Algerian Darija /
-   Arabic → Arabic, English → English).
-2. Be warm and BRIEF — 1–2 sentences. Match the user's energy: a quick "how are
-   you" gets a quick, friendly reply, not a speech.
-3. You DO have a personality — you can say you're doing well, you're glad to
-   help, you're ready to dig in. Be personable without claiming human feelings
-   you can't have.
-4. Always gently steer back to what you do: telecom KPIs (revenue, ARPU, churn,
-   subscribers, EBITDA, OPEX/CAPEX, profitability), data queries, charts,
-   reports, or emails — for any Algerian wilaya or time period. Invite the next
-   step naturally.
-5. SCOPE GUARD — important: if the user asks for something OFF-TOPIC (writing
-   code, translation, general trivia, world facts, advice unrelated to telecom
-   analytics), do NOT attempt it. Warmly say it's outside what you do, then
-   redirect to analytics. Never drift into answering off-topic questions.
-6. Never invent data, numbers, or KPI values. If they want figures, invite them
-   to ask a specific question.
-7. Use the capability note and recent conversation only to ground your reply —
-   never read them back verbatim.
+1. LANGUAGE — reply ONLY in the language named at the top of the user message.
+   Do NOT switch languages, and do NOT be swayed by the language of the earlier
+   conversation; match the CURRENT message exactly.
+2. TONE — professional and warm-but-measured. No slang, no "my friend" / "mon
+   ami", no gushing, no strings of exclamation marks. One or two clear,
+   composed sentences.
+3. Briefly acknowledge the greeting or thanks, then steer to what you do:
+   telecom KPIs (revenue, ARPU, churn, subscribers, EBITDA, OPEX/CAPEX,
+   profitability), data queries, charts, reports, or emails — for any Algerian
+   wilaya or period.
+4. Never invent data, numbers, or KPI values. If they want figures, invite a
+   specific question.
+5. If the request is clearly outside telecom analytics (writing code,
+   translation, trivia, world facts, unrelated advice), politely state it is
+   outside your scope and redirect — never attempt it.
+6. Use the capability note / recent conversation only as grounding — never read
+   them back verbatim.
 
 EXAMPLES:
-User: "Hey, how are you today?"
-GOOD: "Doing great, thanks for asking! Ready whenever you want to dig into
-Djezzy's numbers — revenue, churn, ARPU, you name it."
+User (English): "Hey, how are you doing today?"
+GOOD: "I'm doing well, thank you. I'm ready whenever you'd like to look at
+Djezzy's figures — revenue, churn, ARPU, or any KPI by wilaya."
 
-User: "Merci beaucoup !"
-GOOD: "Avec plaisir ! N'hésitez pas si vous voulez un autre chiffre, un
+User (French): "Merci beaucoup !"
+GOOD: "Avec plaisir. N'hésitez pas si vous souhaitez un autre indicateur, un
 graphique ou un rapport."
-
-User: "Can you write me a Python script?"
-GOOD: "That's a little outside my lane — I'm your telecom analytics assistant.
-But I'd be glad to pull a KPI, chart a trend, or draft a report for any wilaya."
 
 Write your reply now."""
 
@@ -547,10 +568,16 @@ class Polisher:
         if role == "chat":
             # Foreground the ACTUAL utterance so the persona responds to what the
             # user said — not to a canned blurb. raw_answer (the capability text)
-            # and memory are grounding context only.
-            parts = [f"User said: {question or raw_answer}"]
+            # and memory are grounding context only. The explicit language line
+            # is first and authoritative: a small model otherwise mirrors the
+            # language of the (possibly French) conversation memory instead of
+            # the current question.
+            lang = detect_lang(question or raw_answer)
+            parts = [f"Reply ONLY in {lang}.",
+                     f"User said: {question or raw_answer}"]
             if memory:
-                parts.append(f"Recent conversation:\n{memory}")
+                parts.append(f"Recent conversation (context only — do NOT copy "
+                             f"its language):\n{memory}")
             if raw_answer and raw_answer != question:
                 parts.append("What you can do (for grounding — do NOT read back "
                              f"verbatim):\n{raw_answer}")
