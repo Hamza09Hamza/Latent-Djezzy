@@ -20,6 +20,16 @@ matplotlib>=3.7.0
 # 4-bit quantization (optional, recommended on a T4)
 bitsandbytes>=0.43.0
 
+# Voice layer — STT (front) + TTS (back)
+# faster-whisper: CTranslate2 Whisper (large-v3) for transcription
+# coqui-tts: maintained XTTS-v2 fork (PyPI package name is `coqui-tts`, not `TTS`)
+# soundfile: WAV read/write for fixtures and synthesised speech
+faster-whisper>=1.0.0
+coqui-tts>=0.24.0
+soundfile>=0.12.0
+# rapidfuzz: fuzzy post-correction of wilaya names + KPI acronyms in transcripts
+rapidfuzz>=3.0.0
+
 # MySQL backend (local only — Colab uses SQLite)
 mysql-connector-python>=8.0.0
 

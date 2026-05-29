@@ -364,8 +364,20 @@ short, insightful paragraph that the user can read at a glance.
 ABSOLUTE RULES — break one and the answer is wrong:
 1. NEVER invent a number, a wilaya, a date, a KPI, or any fact not in
    the raw data block. If a value is missing, say so plainly.
-2. Quote numbers exactly as given. You may round in prose ("about 491M")
-   but keep the precise value when the user asked for a specific figure.
+2. SPOKEN NUMBERS — this answer is READ ALOUD, so round to a clean,
+   human-speakable figure and ALWAYS keep the scale word attached.
+   A large raw number must become "<rounded> <scale> <unit>", never a
+   bare truncated decimal.
+     1,000,000,000+  → "<X.X> billion DZD"   /  "<X,X> milliards DA"
+     1,000,000+      → "<X.X> million DZD"    /  "<X,X> millions DA"
+     1,000+          → "<X.X> thousand DZD"   /  "<X,X> milliers DA"
+                        (or round to the nearest thousand)
+     rates / %       → keep 1–2 decimals, e.g. "42.39%" / "42,39 %"
+   Examples of the SAME value done right vs wrong:
+     raw 24,546,455 DZD → GOOD "24.5 million DZD" / "24,5 millions DA"
+                          BAD  "24,5"  ·  BAD "24,546,455"  ·  BAD "24.5"
+   Never output a number like "24,5" or "24.5" on its own — the listener
+   cannot tell millions from a fraction. The magnitude word is mandatory.
 3. Keep the units the data uses (DZD, %, etc.). Never add units not in
    the data unless the column name explicitly states them.
 4. Stay grounded in the question — lead with the direct answer.
@@ -383,9 +395,15 @@ Q: "Show me the gross margin for Batna last quarter"
 GOOD: "Batna's average gross margin last quarter was 40.12%."
 BAD : "The avg_gross_margin value is 40.12."
 
+Raw: "1 row | net_income: 24546455.0"
+Q: "Quel est le revenu net pour Oran ?"
+GOOD: "Le revenu net d'Oran est d'environ 24,5 millions de DA."
+BAD : "Le revenu net est de 24,5."   (no scale word — unspeakable)
+BAD : "Le revenu net est de 24 546 455 DA."   (too long to read aloud)
+
 Raw: "2 rows | Sétif net_income 491,926,011 | Tlemcen net_income 432,742,268"
 Q: "Compare net income for Tlemcen and Setif"
-GOOD: "Sétif leads with 491.9M DZD; Tlemcen sits a bit behind at 432.7M — a 59M gap."
+GOOD: "Sétif leads with about 491.9 million DZD; Tlemcen follows at roughly 432.7 million — a gap of around 59 million."
 BAD : "Row 1 shows Sétif: 491926011, Row 2 shows Tlemcen: 432742268."
 
 Now write the answer."""

@@ -124,6 +124,35 @@ class V6Config:
     BRAIN_CONF_MIN     = float(_env("BRAIN_CONF_MIN", "0.35"))  # action conf below → communicator
     BRAIN_MAX_STEPS    = int(_env("BRAIN_MAX_STEPS", "8"))      # loop safety cap
 
+    # ── Speech I/O — STT (front) + TTS (back) ────────────────────────────
+    # The voice layer wraps the text pipeline: an audio question is
+    # transcribed by faster-whisper, the normal graph runs, and the polished
+    # answer is spoken sentence-by-sentence by XTTS-v2 as it streams.
+    #
+    # STT — faster-whisper (CTranslate2). large-v3 is the strongest FR/EN/AR
+    # model; compute_type float16 on GPU, int8_float16 to save ~1.5 GB VRAM.
+    STT_ENABLED    = _env("STT_ENABLED", "1") == "1"
+    STT_MODEL      = _env("STT_MODEL", "large-v3")
+    STT_COMPUTE    = _env("STT_COMPUTE", "float16")   # int8_float16 to save VRAM
+    STT_BEAM_SIZE  = int(_env("STT_BEAM_SIZE", "5"))
+    STT_LANGUAGE   = _env("STT_LANGUAGE", "")          # "" = auto; or "fr"/"en"
+
+    # TTS — Coqui XTTS-v2 (multilingual, streaming, clean female studio
+    # voices). A built-in speaker name is used by default; set a reference
+    # WAV to clone a specific voice instead. Both default voices are female.
+    TTS_ENABLED    = _env("TTS_ENABLED", "1") == "1"
+    TTS_MODEL      = _env("TTS_MODEL",
+                          "tts_models/multilingual/multi-dataset/xtts_v2")
+    TTS_SPEAKER_FR = _env("TTS_SPEAKER_FR", "Daisy Studious")   # clean female
+    TTS_SPEAKER_EN = _env("TTS_SPEAKER_EN", "Daisy Studious")   # clean female
+    TTS_SPEAKER_WAV_FR = _env("TTS_SPEAKER_WAV_FR", "")  # overrides name if set
+    TTS_SPEAKER_WAV_EN = _env("TTS_SPEAKER_WAV_EN", "")
+    TTS_SAMPLE_RATE    = 24000                          # XTTS-v2 native rate
+    TTS_SPEED          = float(_env("TTS_SPEED", "1.0"))
+
+    # Benchmark fixtures
+    BENCH_QUERIES_PATH = os.path.join(DATA_DIR, "bench_queries.json")
+
     # ── SQL runner safety ────────────────────────────────────────────────
     SQL_MAX_ROWS    = 1000         # LIMIT injected when the model omits one
     SQL_TIMEOUT_S   = 10
@@ -225,5 +254,12 @@ class V6Config:
     @classmethod
     def report_dir(cls) -> str:
         d = os.path.join(cls.output_dir(), "reports")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    @classmethod
+    def audio_dir(cls) -> str:
+        """Where generated speech (TTS output, test fixtures) is written."""
+        d = os.path.join(cls.output_dir(), "audio")
         os.makedirs(d, exist_ok=True)
         return d

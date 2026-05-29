@@ -343,7 +343,7 @@ def test_graph():
     check("'hello' did NOT run SQL",
           "sql" not in _actions(r) and not r.get("sql"))
     check("'hello' got a friendly answer",
-          "LatentMind" in r.get("final_answer", ""))
+          "Djezzy" in r.get("final_answer", ""))
 
     # 2. definition
     r = agent.ask("what does ARPU mean", thread_id="t-def")

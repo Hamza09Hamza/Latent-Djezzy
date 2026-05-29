@@ -539,15 +539,15 @@ def template_node(state: dict) -> dict:
 
 # ── communicator (terminal) ──────────────────────────────────────────────
 _GREETING_TEXT = (
-    "Hello! I'm LatentMind V6 — your telecom analytics agent for Algeria. "
-    "Ask me about revenue, ARPU, churn, subscribers, OPEX, CAPEX, or "
-    "profitability for any wilaya. I can also chart the result, draft an "
-    "email, or fill a report.")
+    "Hello! I'm the Djezzy Voice Assistant — your telecom analytics agent "
+    "for Algeria. Ask me about revenue, ARPU, churn, subscribers, OPEX, "
+    "CAPEX, or profitability for any wilaya. I can also chart the result, "
+    "draft an email, or fill a report.")
 _META_TEXT = (
-    "I'm LatentMind V6, a telecom analytics agent for the Algerian market. "
-    "I query the database, analyze the results, and can chart, email, or "
-    "report what I find. Ask me about KPIs, trends, comparisons, or "
-    "breakdowns — by wilaya, period, or segment.")
+    "I'm the Djezzy Voice Assistant, a telecom analytics agent for the "
+    "Algerian market. I query the database, analyze the results, and can "
+    "chart, email, or report what I find. Ask me about KPIs, trends, "
+    "comparisons, or breakdowns — by wilaya, period, or segment.")
 _UNANSWERABLE_TEXT = (
     "That metric isn't in the database. I can answer questions about "
     "revenue, ARPU, churn, subscribers, EBITDA, OPEX, CAPEX, or "
