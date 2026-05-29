@@ -81,6 +81,66 @@ _META = [
     "how can you help me", "what questions work best here",
     "describe yourself", "what is your purpose", "what can i ask you about",
 ]
+# off-topic / out-of-scope — code, trivia, world facts, translation, math,
+# recommendations, recipes, creative writing, general advice. These are NOT
+# telecom analytics and must NEVER reach the SQL pipeline. We label them
+# `meta` because `meta` already routes to the warm chat persona, whose SCOPE
+# GUARD deflects off-topic and steers back to what the assistant can do. The
+# brain only needs to learn "this is not data/definition" → chat. Bilingual,
+# because real users (and the benchmark) mix French and English freely.
+_OFFTOPIC = [
+    # code / programming
+    "write me a python function to sort a list", "write me a python script",
+    "can you write some code", "write a function to reverse a string",
+    "help me debug my javascript", "how do i write a for loop in python",
+    "fix this code for me", "what's the syntax for a sql join in mysql",
+    "build me a react component", "explain how recursion works",
+    # world facts / trivia
+    "what's the weather today", "what's the weather in algiers",
+    "who won the world cup", "who is the president of france",
+    "what's the capital of japan", "how tall is mount everest",
+    "what year did world war two end", "who painted the mona lisa",
+    # translation / language
+    "translate hello to spanish", "translate this sentence to arabic",
+    "how do you say thank you in italian", "what does bonjour mean in english",
+    # math / general computation
+    "what's 15 times 23", "solve this math equation for me",
+    "what's the square root of 144", "convert 100 dollars to euros",
+    # recommendations / advice / lifestyle
+    "recommend a good restaurant in oran", "give me a recipe for couscous",
+    "what movie should i watch tonight", "how do i cook pasta",
+    "plan my vacation to morocco", "what stocks should i buy",
+    "give me some workout tips", "how do i lose weight",
+    # creative / personal
+    "write me a poem", "tell me a story", "sing me a song",
+    "explain quantum physics", "help me write an essay",
+    "what's the meaning of life", "set an alarm for 7am",
+    "summarize this article for me",
+]
+_OFFTOPIC_FR = [
+    # code
+    "écris-moi une fonction python", "écris-moi du code",
+    "peux-tu écrire un script python", "corrige ce code pour moi",
+    "comment écrire une boucle for en python",
+    # faits / culture générale
+    "quel temps fait-il aujourd'hui", "qui a gagné la coupe du monde",
+    "qui est le président de la france", "quelle est la capitale du japon",
+    "en quelle année s'est terminée la seconde guerre mondiale",
+    # traduction
+    "traduis bonjour en anglais", "comment dit-on merci en italien",
+    "que veut dire hello en français",
+    # maths
+    "combien font 15 fois 23", "quelle est la racine carrée de 144",
+    "convertis 100 dollars en euros",
+    # recommandations / conseils
+    "recommande-moi un bon restaurant", "donne-moi une recette de couscous",
+    "quel film regarder ce soir", "comment cuisiner des pâtes",
+    "planifie mes vacances", "donne-moi des conseils sportifs",
+    # créatif / personnel
+    "écris-moi un poème", "raconte-moi une histoire",
+    "explique-moi la physique quantique", "aide-moi à écrire un essai",
+    "résume cet article", "quelle heure est-il à tokyo",
+]
 _FAKE_KPIS = ["quantum score", "blockchain ratio", "customer happiness index",
               "satellite uptime", "employee morale rate", "stock price",
               "carbon footprint", "brand sentiment score", "nps trend",
@@ -353,6 +413,16 @@ def build_dataset(seed: int = 0) -> list[dict]:
         _expand(rows, "greeting", g, "", [])
     for m in sorted(set(_META) | set(_proto("meta"))):
         _expand(rows, "meta", m, "", [])
+
+    # off-topic / out-of-scope — labeled `meta` so it routes to the chat
+    # persona's scope guard (never the SQL pipeline). gold=[] → stop at step 0.
+    # The uniques anchor the region; a noised batch broadens it so casing /
+    # punctuation / a stray wilaya name can't flip the decision.
+    offtopic = sorted(set(_OFFTOPIC) | set(_OFFTOPIC_FR) | set(_proto("off_topic")))
+    for q in offtopic:
+        _expand(rows, "meta", q, "", [])
+    for _ in range(140):
+        _expand(rows, "meta", _noise(rng.choice(offtopic), rng), "", [])
 
     # definition — gold=[rag], then communicator
     for _ in range(112):
