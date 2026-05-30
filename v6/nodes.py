@@ -25,6 +25,7 @@ from .capabilities import compose_email_draft, fill_report, make_chart
 from .config import V6Config
 from .entities import get_resolver
 from .knowledge import get_retriever
+from .numfmt import humanize_cell
 from .orchestrator import assemble
 from .prompts import (build_router_messages, build_sqlgen_instruction,
                       parse_router_output)
@@ -110,24 +111,22 @@ def _history_text(turns: list[dict], memory_summary: str = "",
     return "\n".join(lines)
 
 
-def _fmt_val(v) -> str:
-    if isinstance(v, float):
-        if abs(v) >= 1_000:
-            return f"{v:,.2f}"
-        return f"{v:.4f}"
-    if isinstance(v, int) and abs(v) >= 1_000:
-        return f"{v:,}"
-    return str(v)
+def _summarize_rows(rows: list[dict], cols: list[str], lang: str = "en") -> str:
+    """Render SQL rows as the data block fed to the analyst polisher.
 
+    Every numeric value is humanized HERE (rounded, scaled, unit-tagged) in
+    the query's language — see numfmt.humanize_cell. The figures are therefore
+    already final and speech-ready; the polisher only has to copy them. This
+    is what stops a 1.5B model from corrupting a raw 12-digit number.
+    """
+    def cell(c, r):
+        return f"{c}: {humanize_cell(c, r.get(c), lang)}"
 
-def _summarize_rows(rows: list[dict], cols: list[str]) -> str:
     n = len(rows)
     if n == 1:
-        return " | ".join(f"{c}: {_fmt_val(rows[0].get(c))}" for c in cols)
+        return " | ".join(cell(c, rows[0]) for c in cols)
     head = rows[:8]
-    body = "\n".join(
-        "  " + " | ".join(f"{c}: {_fmt_val(r.get(c))}" for c in cols)
-        for r in head)
+    body = "\n".join("  " + " | ".join(cell(c, r) for c in cols) for r in head)
     more = f"\n  ... ({n - 8} more rows)" if n > 8 else ""
     return f"{n} rows returned:\n{body}{more}"
 
@@ -275,6 +274,7 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
     schema = get_db_schema()
     thoughts: list[dict] = []
     query = state["query"]
+    lang = lang_code(query)          # freeze numbers in the user's language
     thread = state.get("thread_id", "default")
 
     # phase 1 — router (SLM), then deterministic schema validation
@@ -422,7 +422,7 @@ def run_sql_pipeline(state: dict) -> tuple[dict, list[dict]]:
             else:
                 answer = "No data available for that query."
         else:
-            answer = _summarize_rows(rows, columns)
+            answer = _summarize_rows(rows, columns, lang)
             caveats = [i for i in sql_issues if "wilaya" in i or "week_start" in i]
             if caveats:
                 answer += ("\n(Note: the query may not perfectly match your "

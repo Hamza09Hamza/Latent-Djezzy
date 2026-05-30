@@ -53,6 +53,62 @@ def language_for(text: str) -> str:
     return lang_code(text)
 
 
+# ── speakable normalization ─────────────────────────────────────────────────
+# XTTS reads raw text literally: "DZD" becomes the letters "D-Z-D", "%" is hit
+# or miss, and a long grouped number like "1,087,355,290.78" is read digit by
+# digit for ten seconds. speakable() rewrites a sentence into what it should
+# SOUND like just before synthesis: currency codes and symbols become words,
+# artifact/path lines are dropped, and any long number that slipped past the
+# deterministic formatter (numfmt) is collapsed to a scale phrase as a net.
+_CURRENCY_WORD = {"en": "dinars", "fr": "dinars", "ar": "دينار"}
+_PERCENT_WORD = {"en": " percent", "fr": " pour cent", "ar": " بالمئة"}
+# A line that is purely an artifact note (chart/report/email path) — never spoken.
+_ARTIFACT_LINE = re.compile(
+    r"^\s*(?:[📊📄📧🎙🔊]|chart saved|report saved|email (?:draft|saved)|saved\s*[→:-])",
+    re.IGNORECASE)
+_INLINE_TAG = re.compile(r"\[(?:chart|email[:\s]\w*|report|draft)\]", re.IGNORECASE)
+# A grouped or long bare integer (with optional decimals): 1,087,355,290.78
+_LONG_NUM = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{7,}(?:\.\d+)?")
+
+
+def _collapse_long_numbers(text: str, lang: str) -> str:
+    """Safety net: turn any 7-digit-or-grouped number ≥ 1,000,000 into a scale
+    phrase ("1.09 billion") so TTS never reads a number digit by digit."""
+    from .numfmt import humanize
+
+    def repl(m: re.Match) -> str:
+        try:
+            value = float(m.group(0).replace(",", ""))
+        except ValueError:
+            return m.group(0)
+        if abs(value) < 1_000_000:
+            return m.group(0)          # short enough to read as-is
+        return humanize(value, None, lang)
+
+    return _LONG_NUM.sub(repl, text)
+
+
+def speakable(text: str, lang: str = "en") -> str:
+    """Rewrite one sentence into a clean, TTS-friendly form.
+
+    Drops artifact/path lines, spells out currency codes and the percent sign,
+    and collapses any stray long number. Returns "" for lines that are pure
+    artifact notes (so the caller skips them)."""
+    if not text or not text.strip():
+        return ""
+    if _ARTIFACT_LINE.match(text):
+        return ""
+    out = _INLINE_TAG.sub("", text)
+    out = _collapse_long_numbers(out, lang)
+    # currency codes → spoken word (DZD everywhere; DA only as a bare token)
+    cur = _CURRENCY_WORD.get(lang, "dinars")
+    out = re.sub(r"\bDZD\b", cur, out)
+    out = re.sub(r"\bDA\b", cur, out)
+    # percent sign → word (handles "42.42%" and "42 %")
+    out = re.sub(r"\s*%", _PERCENT_WORD.get(lang, " percent"), out)
+    return re.sub(r"\s{2,}", " ", out).strip()
+
+
 # ── sentence buffering for streaming TTS ──────────────────────────────────
 # A boundary is sentence punctuation FOLLOWED by whitespace. Requiring the
 # trailing space is what stops "491.9" or "432.7 million" from being split at
@@ -217,11 +273,20 @@ class TTS:
         sentences = (sentence_split(source) if isinstance(source, str)
                      else sentence_buffer(source))
         for sent in sentences:
+            # Normalize to a clean, TTS-friendly form (currency words, no paths,
+            # no digit-by-digit numbers) right before synthesis.
+            sent = speakable(sent, xtts_lang)
             if not sent.strip():
                 continue
             for chunk in self.xtts.inference_stream(
                     sent, xtts_lang, gpt_latent, spk_emb,
-                    speed=V6Config.TTS_SPEED):
+                    speed=V6Config.TTS_SPEED,
+                    temperature=V6Config.TTS_TEMPERATURE,
+                    length_penalty=V6Config.TTS_LENGTH_PENALTY,
+                    repetition_penalty=V6Config.TTS_REPETITION_PENALTY,
+                    top_k=V6Config.TTS_TOP_K,
+                    top_p=V6Config.TTS_TOP_P,
+                    enable_text_splitting=V6Config.TTS_ENABLE_SPLITTING):
                 yield chunk.detach().cpu().numpy()
 
     def synthesize(self, text: str, language: str = "en",

@@ -166,6 +166,55 @@ def test_capabilities():
           draft.get("to") and "sent" not in draft["status"])
 
 
+# ── D2. number humanization + spoken normalization ──────────────────────
+def test_numfmt():
+    section("D2. numfmt (frozen figures) + speakable (spoken text)")
+    from v6.numfmt import humanize, humanize_cell, unit_for_column
+    from v6.speech import speakable
+    from v6.nodes import _summarize_rows
+
+    # units are inferred from the KPI catalog, through aggregation prefixes
+    check("unit: total_revenue → DZD", unit_for_column("total_revenue") == "DZD")
+    check("unit: avg_gross_margin → %", unit_for_column("avg_gross_margin") == "%")
+    check("unit: avg_arpu → DZD", unit_for_column("avg_arpu") == "DZD")
+    check("unit: avg_churn_rate → %", unit_for_column("avg_churn_rate") == "%")
+
+    # the figure that V5 corrupted ("52,590,189,81") must come out clean
+    check("billion scaled (en)",
+          humanize(1_087_355_290.78, "DZD", "en") == "1.09 billion DZD",
+          humanize(1_087_355_290.78, "DZD", "en"))
+    check("million scaled (en)",
+          humanize(253_387_711.02, "DZD", "en") == "253.4 million DZD",
+          humanize(253_387_711.02, "DZD", "en"))
+    check("percent kept tight (en)",
+          humanize(42.4247, "%", "en") == "42.42%", humanize(42.4247, "%", "en"))
+    check("french decimal comma + scale word",
+          humanize(470_403_313.75, "DZD", "fr") == "470,4 millions DZD",
+          humanize(470_403_313.75, "DZD", "fr"))
+    check("None → em dash", humanize(None, "DZD", "en") == "—")
+    check("non-numeric passes through",
+          humanize("2025-07-01", None, "en") == "2025-07-01")
+
+    # the data block fed to the analyst carries the frozen figure, no 12-digit raw
+    block = _summarize_rows([{"total_revenue": 1_087_355_290.78}],
+                            ["total_revenue"], "en")
+    check("data block is pre-formatted", "1.09 billion DZD" in block, block)
+    check("data block has NO raw 12-digit number", "1,087,355,290" not in block)
+
+    # speakable: currency/percent become words, paths are dropped, long numbers collapse
+    check("DZD → dinars",
+          "dinars" in speakable("revenue was 253.4 million DZD", "en"))
+    check("% → percent",
+          "percent" in speakable("churn was 1.37%", "en")
+          and "%" not in speakable("churn was 1.37%", "en"))
+    check("fr % → pour cent",
+          "pour cent" in speakable("marge de 42,42 %", "fr"))
+    check("artifact/path line dropped",
+          speakable("📊 Chart saved: /content/v6_output/charts/x.png", "en") == "")
+    check("stray long number collapsed",
+          "billion" in speakable("Tizi Ouzou with 1,087,355,290.78 DZD", "en"))
+
+
 # ── E. policy brain (real BGE-M3 + the trained head) ─────────────────────
 def test_brain():
     section("E. policy brain (loads BGE-M3 + the trained head)")
@@ -409,6 +458,7 @@ def main():
     test_entities()
     test_sql_tools()
     test_capabilities()
+    test_numfmt()
     test_brain()
     test_graph()
 

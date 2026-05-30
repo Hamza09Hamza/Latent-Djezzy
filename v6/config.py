@@ -139,16 +139,34 @@ class V6Config:
 
     # TTS — Coqui XTTS-v2 (multilingual, streaming, clean female studio
     # voices). A built-in speaker name is used by default; set a reference
-    # WAV to clone a specific voice instead. Both default voices are female.
+    # WAV (6–20s of clean studio speech) to CLONE a specific professional
+    # voice instead — that is the single biggest quality lever and how you
+    # approach an ElevenLabs-grade result on a local model.
+    #
+    # Default speaker: "Claribel Dervla" — a clear, even, professional female
+    # studio voice; noticeably cleaner than "Daisy Studious". Other strong
+    # built-ins: "Ana Florence", "Sofia Hellen", "Tammie Ema", "Annmarie Nele".
+    # List them at runtime with tts.available_speakers().
     TTS_ENABLED    = _env("TTS_ENABLED", "1") == "1"
     TTS_MODEL      = _env("TTS_MODEL",
                           "tts_models/multilingual/multi-dataset/xtts_v2")
-    TTS_SPEAKER_FR = _env("TTS_SPEAKER_FR", "Daisy Studious")   # clean female
-    TTS_SPEAKER_EN = _env("TTS_SPEAKER_EN", "Daisy Studious")   # clean female
+    TTS_SPEAKER_FR = _env("TTS_SPEAKER_FR", "Claribel Dervla")  # clean female
+    TTS_SPEAKER_EN = _env("TTS_SPEAKER_EN", "Claribel Dervla")  # clean female
     TTS_SPEAKER_WAV_FR = _env("TTS_SPEAKER_WAV_FR", "")  # overrides name if set
     TTS_SPEAKER_WAV_EN = _env("TTS_SPEAKER_WAV_EN", "")
     TTS_SAMPLE_RATE    = 24000                          # XTTS-v2 native rate
     TTS_SPEED          = float(_env("TTS_SPEED", "1.0"))
+
+    # XTTS-v2 sampling knobs — quality-leaning defaults. Lower temperature and
+    # a firmer repetition penalty reduce slurring and the random artefacts that
+    # make a synthetic voice sound cheap. enable_text_splitting lets XTTS do its
+    # own internal sentence handling for steadier long-form prosody.
+    TTS_TEMPERATURE        = float(_env("TTS_TEMPERATURE", "0.6"))
+    TTS_LENGTH_PENALTY     = float(_env("TTS_LENGTH_PENALTY", "1.0"))
+    TTS_REPETITION_PENALTY = float(_env("TTS_REPETITION_PENALTY", "2.5"))
+    TTS_TOP_K              = int(_env("TTS_TOP_K", "50"))
+    TTS_TOP_P              = float(_env("TTS_TOP_P", "0.8"))
+    TTS_ENABLE_SPLITTING   = _env("TTS_ENABLE_SPLITTING", "1") == "1"
 
     # Benchmark fixtures
     BENCH_QUERIES_PATH = os.path.join(DATA_DIR, "bench_queries.json")

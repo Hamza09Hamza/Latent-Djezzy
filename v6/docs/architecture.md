@@ -20,7 +20,7 @@ Every step is decided dynamically by a trained **brain MLP** that watches what h
 No hardcoded routing logic in the graph. The trained MLP picks each action and judges when to stop. Heuristics that belong in "policy" live in training traces, not in Python `if` statements.
 
 **2. Determinism at the trust boundary.**
-The SLM is probabilistic — it can hallucinate columns, wilaya names, or SQL syntax. Every SLM output is post-processed by deterministic validators (`sql_tools.py`, `orchestrator.py`, `entities.py`, `schema.py`) that catch and reject bad outputs before they reach the database.
+The SLM is probabilistic — it can hallucinate columns, wilaya names, or SQL syntax. Every SLM output is post-processed by deterministic validators (`sql_tools.py`, `orchestrator.py`, `entities.py`, `schema.py`) that catch and reject bad outputs before they reach the database. **Numbers are part of this boundary**: figures are rounded and unit-tagged in plain Python (`numfmt.py`) *before* they reach the 1.5B polisher, so the model never reformats a raw value and cannot corrupt it. The polisher copies a frozen figure; it never computes one.
 
 **3. One model, two roles.**
 The Qwen SLM plays both the router (phase 1) and the SQL generator (phase 2) in the same conversation, sharing a KV cache. Phase 2 does not re-encode phase 1's context — it inherits it. This is the LatentMAS (Multi-Agent System) core: latent communication through attention state.
@@ -43,13 +43,16 @@ v6/
 ├── train_brain.py     — MLP training script
 │
 ├── nodes.py           — all node functions + route_after_brain
-├── slm.py             — DualRoleSLM (router + sqlgen) + Polisher
+├── slm.py             — DualRoleSLM (router + sqlgen) + Polisher + lang_code
+├── numfmt.py          — deterministic number humanization (the trust boundary for figures)
 ├── knowledge.py       — BGE-M3 encoder + Retriever
 ├── orchestrator.py    — schema validation + plan assembly
 ├── entities.py        — wilaya name resolution
 ├── schema.py          — live DB introspection
 ├── sql_tools.py       — SQL validation + execution
 ├── capabilities.py    — chart, email, report generation
+├── speech.py          — STT (faster-whisper) + TTS (XTTS-v2) + speakable()
+├── benchmark.py       — text + voice benchmark harness
 ├── prompts.py         — all prompt templates
 │
 ├── data/
@@ -148,7 +151,7 @@ The graph is compiled with a `MemorySaver` checkpointer. Conversation memory (tu
 **Brain loop:**
 - `brain_step` — loop iteration counter (0-indexed, guards against BRAIN_MAX_STEPS)
 - `step_log` — one outcome dict per executed action: `{action, ok, error_type, row_bucket, attempt}`
-- `intent` — decided once at step 0, held for the whole turn: `greeting|meta|definition|data|unanswerable`
+- `intent` — decided once at step 0, held for the whole turn: `greeting|meta|definition|data|unanswerable|off_topic`
 - `next_action` — action the brain chose on this tick
 - `continue_score` — the seuil signal [0, 1]
 - `brain_scores` — full probability distributions for debugging
@@ -211,10 +214,11 @@ Encodes everything that happened so far this turn into a fixed 25-dimensional fe
 **`BrainHead` (nn.Module):**
 ```
 Input (2073) → Linear(256) → ReLU → Dropout(0.1) → trunk (256)
-trunk → Linear(5)   = intent logits  (softmax → 5 probabilities)
+trunk → Linear(6)   = intent logits  (softmax → 6 probabilities)
 trunk → Linear(5)   = action logits  (softmax → 5 probabilities)
 trunk → Linear(1)   = continue logit (sigmoid → [0, 1])
 ```
+The intent head sizes itself from `len(INTENTS)` in `brain.py`; adding an intent (as `off_topic` was) auto-resizes the layer and requires a retrain.
 
 **`Brain.decide()`:**
 1. Embeds query + memory (from cache if already done this turn).
@@ -242,6 +246,7 @@ trunk → Linear(1)   = continue logit (sigmoid → [0, 1])
 - `meta` → communicator only
 - `definition` → communicator only
 - `unanswerable` → communicator only
+- `off_topic` → communicator only (code/translation/trivia/advice — a DETERMINISTIC, language-matched deflection; never sent to the polisher, so a small model can't be coaxed into actually doing it)
 - `data_only` → rag → sql → communicator
 - `data_chart` → rag → sql → chart → communicator
 - `data_email` → rag → sql → email → communicator
@@ -286,7 +291,7 @@ trunk → Linear(1)   = continue logit (sigmoid → [0, 1])
 
 **`route_after_brain(state)`**
 - The seuil gate. Returns the next node name.
-- Non-data intents (`greeting`, `meta`, `definition`, `unanswerable`) → `communicator` directly. The action head's pick is ignored for these.
+- Non-data intents (`greeting`, `meta`, `definition`, `unanswerable`, `off_topic`) → `communicator` directly. The action head's pick is ignored for these — this guard stops a misfiring action head from sending a greeting or off-topic query into the SQL pipeline.
 - `brain_step >= BRAIN_MAX_STEPS` → `communicator`.
 - `action not in ACTIONS` → `communicator`.
 - `continue_score < BRAIN_SEUIL` → `communicator`. (This gates ALL actions — including terminals. An incidental terminal pick after plain SQL gets continue≈0.01 and is correctly blocked.)
@@ -337,7 +342,8 @@ Terminal node. Composes the final answer:
 - `meta` → canned capability description.
 - `definition` → `retriever.definition_for(query)`.
 - `unanswerable` → canned "that metric isn't in the database" text.
-- Otherwise: uses whatever `final_answer` the SQL/capability nodes set; adds emoji notes for chart/report/email artifacts.
+- `off_topic` → fixed, language-matched deflection (`_OFFTOPIC_TEXT[lang_code(query)]`) — never sent to the polisher.
+- Otherwise: uses whatever `final_answer` the SQL/capability nodes set (already carrying humanized figures from `numfmt`); adds emoji notes for chart/report/email artifacts.
 Rolls conversation memory: keeps last 2 raw turns, compacts older ones with `_compact_turns()`. Persists `last_rows`/`last_columns` for follow-up reports.
 
 **`_history_text(turns, memory_summary)`**
@@ -373,21 +379,48 @@ Tries KV-cache reuse first (`_sqlgen_kv`). Falls back to plain re-encode (`_sqlg
 
 If `USE_CONSTRAINED_SQL=True`, `_build_sql_logits_processor` builds a `lm-format-enforcer` regex processor that masks non-SQL tokens at every generation step.
 
-**`detect_lang(text)`** — heuristic language detection (Arabic script → Darija, French vocabulary → French, else English). Used historically; the Polisher now infers language directly from the question.
+**`lang_code(text)` / `detect_lang(text)`** — the single source of truth for language selection. `lang_code` returns `'ar' | 'fr' | 'en'` from Arabic script, French strong/weak markers, else English; `detect_lang` returns the human-readable name for prompting. The chat persona, the off-topic deflection, and the TTS voice (`speech.language_for`) all delegate here, so the spoken language always matches the written one. The explicit `Reply ONLY in <lang>.` line the chat role prepends stops a small model from mirroring the (possibly French) conversation memory instead of the current question.
 
-**`Polisher`** — 3-role natural-language refiner (Qwen2.5-1.5B-Instruct)
+**`Polisher`** — 4-role natural-language refiner (Qwen2.5-1.5B-Instruct)
 
-Three roles, three system prompts:
+Four roles, four system prompts:
 
 | Role | Trigger | Job |
 |---|---|---|
-| `analyze` | SQL data rows returned | Turn numbers into an insightful paragraph |
-| `polish` | RAG / definition / greeting | Rewrite into natural prose |
+| `analyze` | SQL data rows returned | Wrap **already-formatted** figures in an insightful sentence — copy numbers verbatim |
+| `polish` | RAG / definition | Rewrite into natural prose (teach, don't transcribe) |
 | `clarify` | Error or missing info | Explain what went wrong, ask what's needed |
+| `chat` | greeting / thanks / small talk / meta | Professional, measured reply in the question's language |
 
-`stream(raw_answer, question, role)`: yields polished tokens one-by-one via `TextIteratorStreamer`. Uses `do_sample=True, temperature=0.5, top_p=0.9` for natural variation.
+**The analyst does NOT format numbers.** By the time a figure reaches the `analyze` role it is already rounded, scaled, and unit-tagged by `numfmt` (e.g. "253.4 million DZD"). The prompt's first rule is that figures are FINAL: copy each one exactly, never re-round, never do arithmetic, never use "$". This is the fix for a 1.5B model corrupting "1,087,355,290.78" into "52,590,189,81" — the raw number it could mangle no longer exists in its input.
+
+`stream(raw_answer, question, role, memory)`: yields polished tokens one-by-one via `TextIteratorStreamer`. Uses `do_sample=True, temperature=0.5, top_p=0.9` for natural variation. `memory` is only used by the `chat` role.
 
 `complete(system, user)`: blocking single-shot completion used for recipient resolution.
+
+---
+
+### `numfmt.py` — Number Humanization (the figure trust boundary)
+
+**Purpose:** Render every numeric value as a clean, rounded, speech-ready string *before* it reaches the polisher or the screen. This is why an analytics assistant built on a 1.5B refiner can still be trusted with numbers: the model never formats a figure, it only copies one.
+
+**`unit_for_column(col)`** — infers a unit (`DZD | % | count | GB | min | months | days`) for a possibly aggregated/aliased SQL column. Resolution order: exact hit in `kpi_catalog.json` → hit after stripping an aggregation prefix (`avg_`, `total_`, `sum_`, …) → keyword heuristic (`*rate|margin|ratio|share` → `%`; `revenue|income|opex|arpu|…` → `DZD`; `subscriber|adds|base` → `count`). Returns `None` if nothing matches.
+
+**`humanize(value, unit, lang)`** — the core formatter. Locale-aware (`en`/`fr`/`ar`), with a decimal comma and French scale words for `fr`:
+
+| Input | unit | `en` | `fr` |
+|---|---|---|---|
+| 1,087,355,290.78 | DZD | `1.09 billion DZD` | `1,09 milliard DZD` |
+| 253,387,711.02 | DZD | `253.4 million DZD` | `253,4 millions DZD` |
+| 42.4247 | % | `42.42%` | `42,42 %` |
+| 3.071 | DZD | `3.07 DZD` | `3,07 DZD` |
+| `None` | any | `—` | `—` |
+
+Thresholds: `≥1e9` → billions (2 dp), `≥1e6` → millions (1 dp), `≥1e3` → grouped whole number, `<1e3` → up to 2 dp. Percentages keep 2 dp and the symbol. Non-numeric values (dates, wilaya names) pass through untouched.
+
+**`humanize_cell(col, value, lang)`** — `humanize(value, unit_for_column(col), lang)`. Called by `nodes._summarize_rows`, which formats every cell in the query's language so the frozen figure is already in the right locale.
+
+Run `python3 -m v6.numfmt` to see the full formatting table for both languages.
 
 ---
 
@@ -529,6 +562,26 @@ Three roles, three system prompts:
 
 ---
 
+### `speech.py` — Voice Layer (STT + TTS)
+
+**Purpose:** Wraps the text pipeline with speech. `audio → STT → text → [graph] → polished answer → TTS → spoken audio`. The text pipeline is unchanged; this module only adds the front (transcription) and back (synthesis).
+
+**`STT`** — faster-whisper (`large-v3`), CTranslate2. `float16` on GPU, `int8` fallback on CPU. `transcribe()` primes Whisper with a wilaya+KPI `initial_prompt` and fuzzy-corrects the transcript (see `transcribe.py`); `raw_text` keeps the pre-correction output for the benchmark's WER report.
+
+**`TTS`** — Coqui XTTS-v2, driven through its **streaming** inference so speech starts one sentence after generation begins. `sentence_buffer()` groups the polisher's token stream into speakable sentences (a boundary is sentence punctuation followed by whitespace, so "253.4 million" is never split at the decimal). Conditioning latents are computed once per language and cached.
+
+**`speakable(text, lang)` — the spoken-text normalizer (applied per sentence inside `stream()`):**
+- **Currency words:** `DZD`/`DA` → "dinars" (`en`/`fr`) / "دينار" (`ar`). XTTS otherwise spells "D-Z-D".
+- **Percent:** `%` → " percent" / " pour cent" / " بالمئة".
+- **Artifact lines dropped:** a line that is purely a chart/report/email note or a file path (`📊 Chart saved: …`, `[chart]`) returns `""` and is skipped — the voice never reads a path.
+- **Long-number safety net:** any 7-digit / comma-grouped number ≥ 1,000,000 that slipped past `numfmt` is collapsed to a scale phrase ("1.09 billion") so the voice never reads digits one by one.
+
+**Voice quality:** the default speaker is `Claribel Dervla` (clearer than the old `Daisy Studious`); `TTS_SPEAKER_WAV_*` clones a reference WAV instead (the biggest quality lever). Sampling is tuned for stability via `TTS_TEMPERATURE` (0.6), `TTS_REPETITION_PENALTY` (2.5), `TTS_TOP_K`/`TTS_TOP_P`, and `TTS_ENABLE_SPLITTING`. XTTS-v2 is a local model and will not equal a hosted service like ElevenLabs; for that, a reference-WAV clone of a professional voice is the closest path, or swap the TTS backend behind this module's `get_tts()` seam.
+
+**`language_for(text)`** delegates to `slm.lang_code` so the spoken language matches the written answer.
+
+---
+
 ### `prompts.py` — All Prompt Templates
 
 Contains:
@@ -623,8 +676,9 @@ sql_node → run_sql_pipeline(state)
   slm.run_sqlgen(thread_id, instruction) → SQL (phase 2, KV cache reused)
   validate_sql + consistency_check → valid, no issues
   enforce_limit → appends LIMIT 1000
-  execute_sql → {ok:True, rows:[{avg_gross_margin:42.39}], columns:["avg_gross_margin"]}
-  final_answer = "1 row returned:\n  avg_gross_margin: 42.3903"
+  execute_sql → {ok:True, rows:[{avg_gross_margin:42.3903}], columns:["avg_gross_margin"]}
+  _summarize_rows(rows, cols, lang="fr") → humanizes the figure (fr query)
+  final_answer = "avg_gross_margin: 42,39 %"   ← frozen, already formatted
   step_log = [{rag}, {sql, ok:True, row_bucket:"one"}]
         │
         ▼
@@ -642,13 +696,15 @@ communicator_node
   intent="data", final_answer already set by sql_node
   no chart/report/email artifacts
   rolls memory: adds this turn to turns list
-  → final_answer = "1 row returned:\n  avg_gross_margin: 42.3903"
+  → final_answer = "avg_gross_margin: 42,39 %"
         │
         ▼
 END
 
-→ Polisher streams: "La marge brute moyenne pour Oum El Bouaghi le trimestre
-   dernier était de 42.39%."
+→ Polisher (analyze) copies the frozen figure verbatim:
+   "La marge brute moyenne pour Oum El Bouaghi le trimestre dernier
+    était de 42,39 %."
+→ TTS speakable("…42,39 %", "fr") → "…était de 42,39 pour cent." (spoken)
 ```
 
 ---
@@ -685,6 +741,63 @@ All metric tables store data as weekly snapshots (`week_start` column) at the co
 | `V6_BRAIN_MAX_STEPS` | `8` | Loop safety cap |
 | `V6_OUTPUT_DIR` | auto | Output directory for charts/reports/emails |
 | `V6_POLISHER_HUB_ID` | `Qwen/Qwen2.5-1.5B-Instruct` | Polisher model |
+| `V6_STT_MODEL` | `large-v3` | faster-whisper model |
+| `V6_STT_COMPUTE` | `float16` | `int8_float16` to save ~1.5 GB VRAM |
+| `V6_TTS_SPEAKER_EN` / `_FR` | `Claribel Dervla` | XTTS-v2 built-in studio voice |
+| `V6_TTS_SPEAKER_WAV_EN` / `_FR` | `""` | Path to a reference WAV to clone (overrides the name) |
+| `V6_TTS_TEMPERATURE` | `0.6` | XTTS sampling temperature (lower = steadier) |
+| `V6_TTS_REPETITION_PENALTY` | `2.5` | Reduces slurring/artefacts |
+| `V6_TTS_TOP_K` / `V6_TTS_TOP_P` | `50` / `0.8` | XTTS nucleus sampling |
+| `V6_TTS_ENABLE_SPLITTING` | `1` | Let XTTS handle its own internal sentence splitting |
+| `V6_TTS_SPEED` | `1.0` | Speech rate |
+
+---
+
+## Benchmarking
+
+`v6/benchmark.py` is the objective harness. It runs the fixed query set in
+`data/bench_queries.json` (20 queries spanning every intent and capability,
+EN + FR) through the live graph, then **mirrors the notebook's terminal
+routing exactly** — so the answers it grades are the same answers the voice/text
+path produces (clean frozen numbers, the right polisher role, verbatim
+deflections).
+
+### What it measures
+
+- **Intent accuracy** — predicted intent vs. the expected label per query.
+- **SQL exec rate** — share of data queries whose SQL ran and returned rows.
+- **Latency** — brain ticks, RAG, SQL, and total, broken down by category.
+- **Answer review** — for each query: the *spoken* text (post-polish, the
+  number-rounding fix is visible here) alongside the *raw* data block.
+- **Voice round-trip** (GPU only) — synthesizes each query to a WAV, runs it
+  back through STT, reports **WER**, then diffs voice vs. text and lists only
+  the queries that **regressed under voice** (e.g. an STT mishearing flipping
+  an intent), so transcription noise is never mistaken for a pipeline bug.
+
+### How to run
+
+```python
+from v6.benchmark import run_text, run_full
+
+# Text pipeline only (fast, no GPU needed for the graph):
+run_text(polish=True)          # polish=False shows raw figures, skips the 1.5B
+
+# Text + voice round-trip (needs GPU + faster-whisper + XTTS):
+run_full(save=True)            # writes bench_results_*.json / bench_voice_*.json
+```
+
+The polisher routing is `_spoken_role(row)`, kept byte-for-byte in sync with the
+notebook's `_pick_role`. `off_topic` (and cross-turn report messages) return
+`role=None` → spoken verbatim, never through the polisher.
+
+### Reading a result
+
+- A figure shown as `253.4 million DZD` in the spoken text and `253,387,711.02`
+  in the raw line is the number-formatting fix working: `numfmt` froze the
+  clean figure, the analyst copied it.
+- A **voice regression** is reported only when the voice answer diverges from
+  the text answer for the *same* query — almost always traceable to the listed
+  WER / STT mishearing, not the brain.
 
 ---
 
@@ -701,6 +814,12 @@ A brain that exempts terminals from the seuil can accidentally trigger a report/
 
 **Why KV-cache hand-off between router and SQL generator?**
 Re-encoding the same ~512-token context twice is the dominant latency cost. Phase 2 adds about 150 tokens to phase 1's already-computed sequence. Inheriting the KV cache means phase 2 only processes those 150 new tokens instead of re-computing all 512 + 150. On a T4, this saves about 1.5 seconds per query.
+
+**Why format numbers in Python instead of letting the polisher round them?**
+The polisher is a 1.5B model. Asked to round "1,087,355,290.78" it produced "52,590,189,81" — a corrupted figure with two decimal commas. For an analytics tool that is a critical failure: a confidently wrong number is worse than no number. So formatting is pulled out of the model entirely. `numfmt` rounds, scales, and unit-tags every figure deterministically *before* the polisher sees it; the analyst prompt then says figures are FINAL — copy them, never recompute. A frozen "253.4 million DZD" is trivial to copy verbatim; the raw 12-digit value that invited corruption never enters the model's context. The same clean figure is what the TTS layer speaks, so the voice says a short phrase instead of reading ten digits.
+
+**Why a `speakable()` pass before TTS instead of just feeding it the answer?**
+XTTS reads text literally: "DZD" becomes the letters D-Z-D, "%" is hit or miss, and a file path in a chart note gets read aloud. `speakable()` rewrites each sentence into what it should *sound* like — currency and percent become words, artifact/path lines are dropped, and any long number that escaped `numfmt` is collapsed. It runs per sentence inside the TTS stream, so every voice path (notebook, benchmark) gets it for free without changing the text answer shown on screen.
 
 **Why subquery for wilaya filtering, not inline ID list?**
 `dim_location` is commune-level. Alger has 57 communes, Oran has 26. An inline `location_id IN (1, 2, ..., 57)` would consume ~200 tokens in the SQL and make the SQL generator prone to hallucinating IDs. The subquery `WHERE location_id IN (SELECT location_id FROM dim_location WHERE wilaya = 'Alger')` is 15 tokens and delegates ID resolution to the database.
