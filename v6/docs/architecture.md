@@ -52,6 +52,7 @@ v6/
 ├── sql_tools.py       — SQL validation + execution
 ├── capabilities.py    — chart, email, report generation
 ├── speech.py          — STT (faster-whisper) + TTS (XTTS-v2) + speakable()
+├── server.py          — FastAPI + WebSocket API (streams text + cloned audio)
 ├── benchmark.py       — text + voice benchmark harness
 ├── prompts.py         — all prompt templates
 │
@@ -393,6 +394,8 @@ Four roles, four system prompts:
 | `chat` | greeting / thanks / small talk / meta | Professional, measured reply in the question's language |
 
 **The analyst does NOT format numbers.** By the time a figure reaches the `analyze` role it is already rounded, scaled, and unit-tagged by `numfmt` (e.g. "253.4 million DZD"). The prompt's first rule is that figures are FINAL: copy each one exactly, never re-round, never do arithmetic, never use "$". This is the fix for a 1.5B model corrupting "1,087,355,290.78" into "52,590,189,81" — the raw number it could mangle no longer exists in its input.
+
+**By default the polisher IS the 4B** (`POLISHER_USE_MAIN=1`): the roles run through the already-loaded `Qwen3-4B` SLM (`stream_generate`, greedy + speculative drafter) instead of a separate 1.5B. The 4B reliably obeys "reply in French", keeps KPI names (so "churn" never becomes "chômage"), and won't drift off-scope — fixing the language/quality bugs a 1.5B kept producing, at no extra VRAM (it frees ~1.5 GB). Every role's user message now names the target language explicitly (from the *current* question, not the memory). `unanswerable` is no longer polished at all — like `off_topic` it returns a fixed, language-aware deflection (`nodes._UNANSWERABLE_TEXT`), because a free rewrite leaked scope ("to find the stock price, check financial news…"). Set `V6_POLISHER_USE_MAIN=0` to fall back to the standalone 1.5B.
 
 `stream(raw_answer, question, role, memory)`: yields polished tokens one-by-one via `TextIteratorStreamer`. Uses `do_sample=True, temperature=0.5, top_p=0.9` for natural variation. `memory` is only used by the `chat` role.
 
@@ -798,6 +801,41 @@ notebook's `_pick_role`. `off_topic` (and cross-turn report messages) return
 - A **voice regression** is reported only when the voice answer diverges from
   the text answer for the *same* query — almost always traceable to the listed
   WER / STT mishearing, not the brain.
+
+---
+
+## Serving (`server.py`)
+
+A FastAPI app exposes the agent over HTTP + WebSocket so a web/mobile client can
+call it. On Colab it runs behind an **ngrok** tunnel (the notebook's *Serve*
+cells start `uvicorn` in a thread and open the tunnel).
+
+**Everything runs server-side** — STT, brain, SLM, polisher, cloned-voice TTS.
+A browser cannot run the XTTS clone or the Qwen/BGE models, and the Web Speech
+API is robotic and can't clone a voice, so streaming audio from the server is
+the only way to deliver the recorded voice.
+
+**Streaming over one WebSocket (`/ws`)** — the client gets text and audio:
+- `{type:"thinking"}` the 💭 trace as the brain works
+- `{type:"meta", intent, role}` how the answer is produced
+- `{type:"token"}` the answer text, streamed (renders ChatGPT-style)
+- `{type:"audio", seq, sr, data}` cloned-voice **PCM16 base64** chunks, ~1
+  sentence behind the text (XTTS already streams per sentence)
+- `{type:"artifact"}` chart/report/email pointers, then `{type:"answer"}`, `{type:"done"}`
+
+The blocking pipeline runs in a thread; events are marshalled to the event loop
+through a queue, so the socket stays responsive while the GPU works.
+
+**REST fallbacks:** `POST /ask` (JSON, non-streaming), `POST /ask_voice`
+(multipart audio → STT → pipeline, returns text + PCM16 chunks),
+`GET /chart/{name}`, `GET /health`, and `GET /` (a minimal browser client that
+plays the streamed audio gaplessly via the Web Audio API).
+
+**Constraints:** one GPU → an `asyncio.Lock` serializes requests (one at a
+time). ngrok is public → every endpoint requires `V6_API_TOKEN` (bearer header
+or `?token=`); if unset, one is generated and printed at startup. A Colab
+session is ephemeral — this is a demo/dev server. For production, run the same
+app on a persistent GPU host (Modal / RunPod / HF Endpoints) behind a queue.
 
 ---
 

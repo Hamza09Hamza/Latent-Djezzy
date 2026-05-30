@@ -86,13 +86,14 @@ def _spoken_role(row: dict) -> tuple[str | None, str]:
     intent = row.get("pred_intent") or "data"
     answer = row.get("answer", "") or ""
     exec_ok = bool(row.get("exec_ok"))
-    if intent == "off_topic":
-        # Deterministic deflection — spoken verbatim, never via the polisher.
+    if intent in ("off_topic", "unanswerable"):
+        # Deterministic, language-aware deflection — spoken verbatim. NEVER via
+        # the polisher: a free rewrite leaks scope (e.g. how to find a stock price).
         return None, answer
     if intent in ("greeting", "meta"):
         # Warm 'chat' persona responds to the utterance, not a canned blurb.
         return "chat", answer
-    if intent in ("definition", "unanswerable"):
+    if intent == "definition":
         return "polish", answer
     if row.get("document_path") and not exec_ok:
         return None, "Report generated from the previous result."

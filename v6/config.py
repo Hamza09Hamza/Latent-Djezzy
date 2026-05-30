@@ -94,6 +94,12 @@ class V6Config:
     # never invents numbers — it rewords the raw data summary.
     POLISHER_HUB_ID = _env("POLISHER_HUB_ID", "Qwen/Qwen2.5-1.5B-Instruct")
     POLISHER_MAX_NEW_TOKENS = int(_env("POLISHER_MAX_NEW", "180"))
+    # Route the polisher roles (analyst/polish/clarify/chat) through the MAIN
+    # SLM (Qwen3-4B) already resident in VRAM, instead of loading a separate
+    # 1.5B. The 4B obeys "reply in French", keeps KPI names, and won't drift
+    # off-scope — it's the single biggest answer-quality lever, and it frees
+    # ~1.5 GB. Set V6_POLISHER_USE_MAIN=0 to fall back to the standalone 1.5B.
+    POLISHER_USE_MAIN = _env("POLISHER_USE_MAIN", "1") == "1"
 
     # ── Constrained SQL decoding (lm-format-enforcer) ────────────────────
     # When ON: a grammar processor masks non-SQL tokens at every generation

@@ -588,10 +588,22 @@ _META_TEXT = (
     "Algerian market. I query the database, analyze the results, and can "
     "chart, email, or report what I find. Ask me about KPIs, trends, "
     "comparisons, or breakdowns — by wilaya, period, or segment.")
-_UNANSWERABLE_TEXT = (
-    "That metric isn't in the database. I can answer questions about "
-    "revenue, ARPU, churn, subscribers, EBITDA, OPEX, CAPEX, or "
-    "profitability — for any Algerian wilaya or time period.")
+# Unanswerable (a real-sounding KPI the DB doesn't have) — DETERMINISTIC and
+# language-aware, like the off-topic deflection. NEVER sent to the polisher: a
+# free rewrite leaks scope (e.g. "to find the stock price, check financial
+# news…") instead of declining. Keyed by lang_code(query).
+_UNANSWERABLE_TEXT = {
+    "en": ("That metric isn't in the database. I can answer questions about "
+           "revenue, ARPU, churn, subscribers, EBITDA, OPEX, CAPEX, or "
+           "profitability — for any Algerian wilaya or time period."),
+    "fr": ("Cet indicateur n'est pas dans la base de données. Je peux répondre "
+           "sur le revenu, l'ARPU, le taux de désabonnement, les abonnés, "
+           "l'EBITDA, l'OPEX, le CAPEX ou la rentabilité — pour n'importe "
+           "quelle wilaya algérienne ou période."),
+    "ar": ("هذا المؤشر غير موجود في قاعدة البيانات. يمكنني الإجابة عن أسئلة حول "
+           "الإيرادات وARPU ومعدل التسرّب والمشتركين وEBITDA وOPEX وCAPEX أو "
+           "الربحية — لأي ولاية جزائرية أو فترة زمنية."),
+}
 # Off-topic deflection — DETERMINISTIC and language-aware. Off-topic requests
 # (code, translation, trivia, advice) are answered with this fixed text and
 # NEVER routed through the polisher, so a small model cannot be coaxed into
@@ -628,7 +640,8 @@ def communicator_node(state: dict) -> dict:
             "I don't have a stored definition for that term. Try ARPU, churn "
             "rate, active base, total revenue, EBITDA, OPEX or CAPEX.")
     elif intent == "unanswerable":
-        answer = _UNANSWERABLE_TEXT
+        answer = _UNANSWERABLE_TEXT.get(lang_code(state["query"]),
+                                        _UNANSWERABLE_TEXT["en"])
     elif intent == "off_topic":
         # Fixed, language-matched deflection — never sent to the polisher.
         answer = _OFFTOPIC_TEXT.get(lang_code(state["query"]), _OFFTOPIC_TEXT["en"])

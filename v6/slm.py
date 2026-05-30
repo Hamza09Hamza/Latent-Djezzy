@@ -253,25 +253,50 @@ class DualRoleSLM:
         torch.cuda.empty_cache()
 
     # ── streaming generation ─────────────────────────────────────────────
-    def stream_generate(self, messages: list[dict], max_new_tokens: int = 512):
-        """Yield decoded tokens one by one as the model generates them."""
+    def stream_generate(self, messages: list[dict], max_new_tokens: int = 512,
+                        do_sample: bool = False, temperature: float = 0.5,
+                        top_p: float = 0.9, repetition_penalty: float = 1.05):
+        """Yield decoded tokens one by one as the model generates them.
+
+        Used for direct SLM checks AND (when POLISHER_USE_MAIN) for the polisher
+        roles — the 4B writes the final answer instead of a separate 1.5B. The
+        0.5/0.6B speculative drafter accelerates greedy decoding (the proven
+        path from chat()/run_router); sampling skips it to stay robust.
+        """
         from transformers import TextIteratorStreamer
         text = self._tmpl(messages)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)
         streamer = TextIteratorStreamer(
             self.tokenizer, skip_prompt=True, skip_special_tokens=True)
         gen_kwargs = dict(
-            **enc,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            streamer=streamer,
-            pad_token_id=self.tokenizer.eos_token_id,
-        )
-        t = threading.Thread(target=self.model.generate, kwargs=gen_kwargs)
+            **enc, max_new_tokens=max_new_tokens, streamer=streamer,
+            pad_token_id=self.tokenizer.eos_token_id)
+        if do_sample:
+            gen_kwargs.update(do_sample=True, temperature=temperature,
+                              top_p=top_p, repetition_penalty=repetition_penalty)
+        else:
+            gen_kwargs["do_sample"] = False
+            # speculative decoding is validated for greedy — reuse it for speed
+            if self._draft is not None:
+                gen_kwargs["assistant_model"] = self._draft
+                if self._draft_tokenizer is not None:
+                    gen_kwargs["tokenizer"] = self.tokenizer
+                    gen_kwargs["assistant_tokenizer"] = self._draft_tokenizer
+        exc_holder: list[BaseException] = []
+
+        def _run():
+            try:
+                self.model.generate(**gen_kwargs)
+            except Exception as e:  # noqa: BLE001
+                exc_holder.append(e)
+                streamer.end()
+        t = threading.Thread(target=_run, daemon=True)
         t.start()
         for token in streamer:
             yield token
         t.join()
+        if exc_holder:
+            raise exc_holder[0]
 
     # ── phase-2 implementations ──────────────────────────────────────────
     def _sqlgen_kv(self, seq1, cache, instruction: str, max_new: int,
@@ -401,7 +426,9 @@ THE NUMBERS ARE ALREADY FINAL — break this and the answer is WRONG:
 3. NEVER do arithmetic. Do not compute differences, sums, percentages,
    growth rates, or year-over-year changes. Do not reference any period
    (e.g. "last year", "vs 2024") that is not literally in the data block.
-   You may only point out which value is larger/smaller when both are shown.
+   You may point out which value is larger/smaller only when BOTH are shown
+   side by side. With many rows, do NOT claim which wilaya is "highest" or
+   "lowest" unless the rows are already ordered and the top one is visible.
 4. Currency is ALWAYS DZD exactly as written. NEVER use "$", "USD", "€", or
    any other currency symbol.
 5. NEVER invent a number, wilaya, date, or KPI not in the block. If a value
@@ -411,8 +438,11 @@ STYLE — write like a smart colleague briefing the user:
 - Direct: lead with the answer, then the supporting figure(s).
 - Professional, no filler: no "Based on the data", no "I have analyzed".
 - Reply in the SAME LANGUAGE the user used (French → French, Arabic → Arabic).
+- NEVER repeat or restate the user's question — answer directly.
 - Max 2–3 short sentences, or a tight bullet list for multi-row comparisons.
 - Never mention SQL, "the query", "rows", or "the data block".
+- Keep KPI names as written (ARPU, EBITDA, OPEX, CAPEX). In French, churn is
+  "taux de désabonnement" — NEVER "chômage" (that means unemployment).
 
 EXAMPLES:
 Data: "avg_gross_margin: 40.12%"
@@ -493,6 +523,9 @@ RULES:
 4. Never invent data, numbers, or KPI values. Only invite a specific question
    if the user is clearly looking for data — never after a plain greeting or
    thank-you.
+4b. Keep KPI names correct. ARPU, EBITDA, OPEX, CAPEX stay as-is. In French,
+   churn is "taux de désabonnement" — NEVER "chômage" (= unemployment). Do not
+   list KPIs unless the user asked what you can do.
 5. If the request is clearly outside telecom analytics (writing code,
    translation, trivia, world facts, unrelated advice), politely state it is
    outside your scope and redirect — never attempt it.
@@ -540,49 +573,45 @@ class Polisher:
     enough to stay cheap on T4, fluent enough for natural prose. Loaded
     lazily on first use."""
 
+    _MAX_NEW = {"analyze": 160, "polish": 200, "clarify": 120, "chat": 120}
+
     def __init__(self, hub_id: str | None = None):
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        self.use_main = V6Config.POLISHER_USE_MAIN
         self.hub_id = hub_id or V6Config.POLISHER_HUB_ID
         self.device = V6Config.device()
+        self.tokenizer = None
+        self.model = None
+        if not self.use_main:
+            self._load_local()
+
+    def _load_local(self) -> None:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         dtype = (torch.float16 if self.device.type in ("cuda", "mps")
                  else torch.float32)
         self.tokenizer = AutoTokenizer.from_pretrained(self.hub_id)
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.hub_id, torch_dtype=dtype,
-            device_map={"": str(self.device)})
+            self.hub_id, torch_dtype=dtype, device_map={"": str(self.device)})
         self.model.eval()
 
-    def stream(self, raw_answer: str, question: str = "",
-               role: str = "analyze", memory: str = ""):
-        """Yield polished tokens one-by-one via TextIteratorStreamer.
+    @staticmethod
+    def _messages(raw_answer: str, question: str, role: str,
+                  memory: str) -> list[dict]:
+        """Build [system, user] for a role, with the reply language forced.
 
-        role: 'analyze' (SQL data → analytical prose) |
-              'polish'  (RAG/definition → natural rewrite) |
-              'clarify' (error / missing info → helpful clarification) |
-              'chat'    (greeting / small talk / meta → warm, personable reply)
-        `memory` is an optional short recap of the recent conversation; only the
-        'chat' role uses it, so social follow-ups stay context-aware.
-        The model infers the response language from the user's question text.
+        Every role names the target language explicitly — a small/instruct
+        model otherwise drifts to English on a French data answer, or mirrors
+        the conversation memory's language. lang comes from the CURRENT
+        question, never the memory.
         """
-        from transformers import TextIteratorStreamer
-
-        _systems = {
-            "analyze": _ANALYST_SYSTEM,
-            "polish":  _POLISHER_SYSTEM,
-            "clarify": _CLARIFIER_SYSTEM,
-            "chat":    _CHAT_SYSTEM,
-        }
+        _systems = {"analyze": _ANALYST_SYSTEM, "polish": _POLISHER_SYSTEM,
+                    "clarify": _CLARIFIER_SYSTEM, "chat": _CHAT_SYSTEM}
         system = _systems.get(role, _ANALYST_SYSTEM)
+        lang = detect_lang(question or raw_answer)
 
         if role == "chat":
-            # Respond to the ACTUAL utterance. We deliberately do NOT pass the
-            # canned capability blurb (raw_answer) as grounding: a 1.5B model
-            # parrots it ("hello" → the whole brochure) or fixates on it
-            # ("merci" → "which KPI?"). The system prompt already knows the
-            # capabilities. The language line is first AND last (recency) and
-            # authoritative — a small model otherwise mirrors the language of
-            # the (possibly French) conversation memory instead of the question.
-            lang = detect_lang(question or raw_answer)
+            # Respond to the ACTUAL utterance. Do NOT pass the canned capability
+            # blurb as grounding — the model parrots it or fixates on "which
+            # KPI?". The language line is first AND last (recency).
             parts = [f"Reply ONLY in {lang}. Every word must be {lang}.",
                      f"The user said: {question or raw_answer}"]
             if memory:
@@ -591,39 +620,66 @@ class Polisher:
             parts.append(f"Now write your reply, in {lang} only.")
             user_msg = "\n\n".join(parts)
         elif role == "clarify":
-            user_msg = (f"User's original question: {question}\n\n"
+            user_msg = (f"Reply ONLY in {lang}.\n\n"
+                        f"User's original question: {question}\n\n"
                         f"Issue to clarify: {raw_answer}")
-        else:
-            user_msg = (f"User question: {question}\n\nRaw data block:\n{raw_answer}"
-                        if question else f"Raw data block:\n{raw_answer}")
+        elif role == "analyze":
+            user_msg = (f"Reply ONLY in {lang}. Keep every number, scale word "
+                        f"and unit EXACTLY as written.\n\n"
+                        f"User question: {question}\n\nData block:\n{raw_answer}")
+        else:  # polish (definition / RAG)
+            head = f"Reply ONLY in {lang}.\n\n" if question else ""
+            user_msg = (f"{head}User question: {question}\n\n"
+                        f"Reference text:\n{raw_answer}" if question
+                        else f"Reference text:\n{raw_answer}")
+        return [{"role": "system", "content": system},
+                {"role": "user", "content": user_msg}]
 
-        messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": user_msg}]
+    def stream(self, raw_answer: str, question: str = "",
+               role: str = "analyze", memory: str = ""):
+        """Yield polished tokens one-by-one.
+
+        role: 'analyze' (SQL data → analytical prose) |
+              'polish'  (RAG/definition → natural rewrite) |
+              'clarify' (error / missing info → helpful clarification) |
+              'chat'    (greeting / small talk / meta → warm, personable reply)
+
+        When POLISHER_USE_MAIN, the already-loaded 4B SLM writes the answer
+        (greedy + speculative drafter) — far better language/scope adherence
+        than a standalone 1.5B. Otherwise the local 1.5B streams it.
+        """
+        messages = self._messages(raw_answer, question, role, memory)
+        max_new = self._MAX_NEW.get(role, V6Config.POLISHER_MAX_NEW_TOKENS)
+
+        if self.use_main:
+            # Greedy keeps the analyst deterministic (numbers, language) and
+            # lets the speculative drafter accelerate the 4B.
+            yield from get_slm().stream_generate(
+                messages, max_new_tokens=max_new, do_sample=False)
+            return
+
+        # ── fallback: standalone 1.5B ────────────────────────────────────
+        from transformers import TextIteratorStreamer
+        if self.model is None:
+            self._load_local()
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)
-
         streamer = TextIteratorStreamer(
             self.tokenizer, skip_prompt=True, skip_special_tokens=True)
         exc_holder: list[BaseException] = []
-        # Chat drifts (wrong language, off-topic) at higher temperature; keep it
-        # tight. Analyst/polish/clarify keep a little warmth for natural prose.
         temperature = 0.3 if role == "chat" else 0.5
 
         def _gen():
             try:
                 self.model.generate(
-                    **enc,
-                    streamer=streamer,
-                    max_new_tokens=V6Config.POLISHER_MAX_NEW_TOKENS,
-                    do_sample=True,
-                    temperature=temperature,
-                    top_p=0.9,
+                    **enc, streamer=streamer, max_new_tokens=max_new,
+                    do_sample=True, temperature=temperature, top_p=0.9,
                     repetition_penalty=1.05,
                     pad_token_id=self.tokenizer.eos_token_id)
             except Exception as e:  # noqa: BLE001
                 exc_holder.append(e)
-                streamer.end()  # unblock the iterator
+                streamer.end()
 
         t = threading.Thread(target=_gen, daemon=True)
         t.start()
@@ -635,10 +691,13 @@ class Polisher:
 
     @torch.no_grad()
     def complete(self, system: str, user: str, max_new: int = 120) -> str:
-        """Blocking single-shot completion. Used for tasks like recipient
-        resolution where streaming offers no benefit."""
+        """Blocking single-shot completion (e.g. recipient resolution)."""
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": user}]
+        if self.use_main:
+            return get_slm().chat(messages, max_new_tokens=max_new)
+        if self.model is None:
+            self._load_local()
         text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True)
         enc = self.tokenizer(text, return_tensors="pt").to(self.device)

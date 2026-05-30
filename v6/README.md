@@ -129,6 +129,27 @@ visible here), and — on GPU — a `.wav → STT` voice round-trip with WER and
 voice-vs-text **regression** list so STT noise is never mistaken for a pipeline
 bug. See the *Benchmarking* section of [docs/architecture.md](docs/architecture.md).
 
+## Serve it (temporary API via ngrok)
+
+[server.py](server.py) exposes the agent over HTTP + WebSocket so a web or
+mobile client can call it — **everything runs server-side** (STT, brain, SLM,
+polisher, cloned-voice TTS), because a browser can't run your XTTS voice or the
+Qwen/BGE models. Over one WebSocket the client receives the 💭 thinking trace,
+the answer **text** as it streams, and the **audio** in your reference voice
+(~1 sentence behind the text), plus chart/report/email pointers.
+
+On Colab: run the agent-load cells, then the **Serve** cells (install +
+ngrok launch). Open the printed URL, paste the token, ask. Endpoints:
+`GET /` (browser client) · `WS /ws` (streaming) · `POST /ask` (JSON) ·
+`POST /ask_voice` (multipart audio) · `GET /chart/{name}` · `GET /health`.
+Single GPU → requests serialize; ngrok is public → every endpoint needs the
+`V6_API_TOKEN`. It's a *demo* server (Colab is ephemeral); for production run
+the same app on a persistent GPU host.
+
+```bash
+uvicorn v6.server:app --host 0.0.0.0 --port 8000   # locally
+```
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -141,6 +162,9 @@ bug. See the *Benchmarking* section of [docs/architecture.md](docs/architecture.
 | `V6_4BIT` | `0` | 4-bit NF4 quantization |
 | `V6_TTS_SPEAKER_EN` / `_FR` | `Claribel Dervla` | XTTS-v2 voice (or `_WAV_*` to clone) |
 | `V6_TTS_TEMPERATURE` / `_REPETITION_PENALTY` | `0.6` / `2.5` | XTTS quality knobs |
+| `V6_POLISHER_USE_MAIN` | `1` | polish via the loaded 4B (vs a separate 1.5B) |
+| `V6_REFERENCE_DATE` | wall clock | pin "today" for relative periods (stale Colab clock) |
+| `V6_API_TOKEN` | auto | bearer token the server requires (set before serving) |
 | `V6_SMTP_USER` / `_PASSWORD` / `_HOST` | – | only to actually send a drafted email |
 | `LATENTMIND_MYSQL_*` | localhost/interndb | MySQL connection (local) |
 
@@ -163,5 +187,6 @@ bug. See the *Benchmarking* section of [docs/architecture.md](docs/architecture.
 | [sql_tools.py](sql_tools.py) | SQL safety, consistency check, execution |
 | [capabilities.py](capabilities.py) | chart / email-draft / report |
 | [speech.py](speech.py) | STT + TTS + `speakable()` |
+| [server.py](server.py) | FastAPI + WebSocket server (streams text + cloned audio) |
 | [benchmark.py](benchmark.py) | text + voice benchmark harness |
 | [test_v6.py](test_v6.py) | verification harness |

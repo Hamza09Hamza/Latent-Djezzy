@@ -33,5 +33,13 @@ rapidfuzz>=3.0.0
 # MySQL backend (local only — Colab uses SQLite)
 mysql-connector-python>=8.0.0
 
+# API server (optional — the `serve` cell on Colab via ngrok). Streams the
+# thinking trace + answer text + cloned-voice audio over a WebSocket.
+fastapi>=0.110.0
+uvicorn>=0.29.0
+python-multipart>=0.0.9   # /ask_voice file uploads
+pyngrok>=7.0.0            # public tunnel from Colab
+nest-asyncio>=1.6.0       # run uvicorn inside the Colab event loop
+
 # Flash Attention 2 (optional — needs a C++ build, install separately):
 #   pip install flash-attn --no-build-isolation
