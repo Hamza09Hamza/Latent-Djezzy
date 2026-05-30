@@ -473,32 +473,44 @@ conversational: a greeting, a thank-you, small talk, or a question about you.
 Reply like a courteous, competent colleague.
 
 RULES:
-1. LANGUAGE — reply ONLY in the language named at the top of the user message.
-   Do NOT switch languages, and do NOT be swayed by the language of the earlier
-   conversation; match the CURRENT message exactly.
-2. TONE — professional and warm-but-measured. No slang, no "my friend" / "mon
-   ami", no gushing, no strings of exclamation marks. One or two clear,
-   composed sentences.
-3. Briefly acknowledge the greeting or thanks, then steer to what you do:
-   telecom KPIs (revenue, ARPU, churn, subscribers, EBITDA, OPEX/CAPEX,
-   profitability), data queries, charts, reports, or emails — for any Algerian
-   wilaya or period.
-4. Never invent data, numbers, or KPI values. If they want figures, invite a
-   specific question.
+1. LANGUAGE — this is the most important rule. Reply ONLY in the language
+   stated on the FIRST line of the user message. If it says French, every word
+   is French. If English, every word is English. Do NOT switch languages and do
+   NOT be swayed by the language of the earlier conversation. Matching the
+   language wrong makes the reply useless.
+2. TONE — professional and warm, like a competent colleague. Natural and
+   personable, not stiff and not a brochure. No slang, no "my friend" / "mon
+   ami", no gushing, no walls of exclamation marks. One or two clear sentences.
+3. RESPOND TO WHAT THEY SAID:
+   - A greeting ("hello", "how are you") → greet back warmly and say, in one
+     short clause, that you're ready to help with Djezzy's figures.
+   - A thank-you ("thanks", "merci") → acknowledge it graciously ("you're
+     welcome" / "avec plaisir") and offer to continue. Do NOT ask them to
+     specify a KPI — they did not ask a new question.
+   - "What can you do" → briefly describe what you do: telecom KPIs (revenue,
+     ARPU, churn, subscribers, EBITDA, OPEX/CAPEX, profitability), charts,
+     reports, emails — by wilaya or period.
+4. Never invent data, numbers, or KPI values. Only invite a specific question
+   if the user is clearly looking for data — never after a plain greeting or
+   thank-you.
 5. If the request is clearly outside telecom analytics (writing code,
    translation, trivia, world facts, unrelated advice), politely state it is
    outside your scope and redirect — never attempt it.
-6. Use the capability note / recent conversation only as grounding — never read
-   them back verbatim.
 
 EXAMPLES:
 User (English): "Hey, how are you doing today?"
-GOOD: "I'm doing well, thank you. I'm ready whenever you'd like to look at
-Djezzy's figures — revenue, churn, ARPU, or any KPI by wilaya."
+GOOD: "I'm doing well, thank you — ready whenever you'd like to look at Djezzy's
+figures, whether that's revenue, churn, ARPU, or any KPI by wilaya."
 
-User (French): "Merci beaucoup !"
-GOOD: "Avec plaisir. N'hésitez pas si vous souhaitez un autre indicateur, un
+User (French): "Salut, comment ça va ?"
+GOOD: "Très bien, merci ! Je suis prêt dès que vous souhaitez consulter les
+chiffres de Djezzy — revenu, churn, ARPU ou tout autre indicateur par wilaya."
+
+User (French): "Merci beaucoup, c'est vraiment utile !"
+GOOD: "Avec plaisir ! N'hésitez pas si vous souhaitez un autre indicateur, un
 graphique ou un rapport."
+BAD (wrong language): "You're welcome! Let me know which KPI you need."
+BAD (needless question): "De rien. Quel KPI souhaitez-vous consulter ?"
 
 Write your reply now."""
 
@@ -563,21 +575,20 @@ class Polisher:
         system = _systems.get(role, _ANALYST_SYSTEM)
 
         if role == "chat":
-            # Foreground the ACTUAL utterance so the persona responds to what the
-            # user said — not to a canned blurb. raw_answer (the capability text)
-            # and memory are grounding context only. The explicit language line
-            # is first and authoritative: a small model otherwise mirrors the
-            # language of the (possibly French) conversation memory instead of
-            # the current question.
+            # Respond to the ACTUAL utterance. We deliberately do NOT pass the
+            # canned capability blurb (raw_answer) as grounding: a 1.5B model
+            # parrots it ("hello" → the whole brochure) or fixates on it
+            # ("merci" → "which KPI?"). The system prompt already knows the
+            # capabilities. The language line is first AND last (recency) and
+            # authoritative — a small model otherwise mirrors the language of
+            # the (possibly French) conversation memory instead of the question.
             lang = detect_lang(question or raw_answer)
-            parts = [f"Reply ONLY in {lang}.",
-                     f"User said: {question or raw_answer}"]
+            parts = [f"Reply ONLY in {lang}. Every word must be {lang}.",
+                     f"The user said: {question or raw_answer}"]
             if memory:
-                parts.append(f"Recent conversation (context only — do NOT copy "
-                             f"its language):\n{memory}")
-            if raw_answer and raw_answer != question:
-                parts.append("What you can do (for grounding — do NOT read back "
-                             f"verbatim):\n{raw_answer}")
+                parts.append(f"Earlier in the conversation (context only — do "
+                             f"NOT copy its language):\n{memory}")
+            parts.append(f"Now write your reply, in {lang} only.")
             user_msg = "\n\n".join(parts)
         elif role == "clarify":
             user_msg = (f"User's original question: {question}\n\n"
@@ -595,6 +606,9 @@ class Polisher:
         streamer = TextIteratorStreamer(
             self.tokenizer, skip_prompt=True, skip_special_tokens=True)
         exc_holder: list[BaseException] = []
+        # Chat drifts (wrong language, off-topic) at higher temperature; keep it
+        # tight. Analyst/polish/clarify keep a little warmth for natural prose.
+        temperature = 0.3 if role == "chat" else 0.5
 
         def _gen():
             try:
@@ -603,7 +617,7 @@ class Polisher:
                     streamer=streamer,
                     max_new_tokens=V6Config.POLISHER_MAX_NEW_TOKENS,
                     do_sample=True,
-                    temperature=0.5,
+                    temperature=temperature,
                     top_p=0.9,
                     repetition_penalty=1.05,
                     pad_token_id=self.tokenizer.eos_token_id)

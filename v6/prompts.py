@@ -161,7 +161,7 @@ def _resolve_time(phrase: str) -> str | None:
     """
     if not phrase:
         return None
-    today = date.today()
+    today = V6Config.reference_date()    # wall clock, or V6_REFERENCE_DATE override
     y, m = today.year, today.month
     p = phrase.strip().lower()
 

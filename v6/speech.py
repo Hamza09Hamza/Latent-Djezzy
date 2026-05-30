@@ -234,18 +234,40 @@ class TTS:
         except Exception:  # noqa: BLE001 — older torch has no safe-globals API
             pass
 
+    @staticmethod
+    def _ensure_wav(path: str) -> str:
+        """Return a 24 kHz mono WAV for `path`, converting (and caching) if the
+        reference is an mp3/other format. XTTS clones from a WAV; this lets a
+        user drop an mp3 recording straight into v6/audio."""
+        if path.lower().endswith(".wav"):
+            return path
+        out = os.path.splitext(path)[0] + ".ref24k.wav"
+        if os.path.isfile(out):
+            return out
+        import torchaudio
+        wav, sr = torchaudio.load(path)               # decodes mp3 via the ffmpeg backend
+        if wav.shape[0] > 1:                          # stereo → mono
+            wav = wav.mean(dim=0, keepdim=True)
+        if sr != V6Config.TTS_SAMPLE_RATE:
+            wav = torchaudio.functional.resample(wav, sr, V6Config.TTS_SAMPLE_RATE)
+        torchaudio.save(out, wav, V6Config.TTS_SAMPLE_RATE)
+        return out
+
     def _latents(self, language: str):
-        """Conditioning latents for a language's configured voice (cached)."""
+        """Conditioning latents for a language's configured voice (cached).
+
+        Prefers a cloned reference voice (V6Config.speaker_wav picks one from
+        v6/audio by language + gender); falls back to the built-in studio
+        speaker name when no reference is found.
+        """
         if language in self._latent_cache:
             return self._latent_cache[language]
-        if language == "fr":
-            wav, name = V6Config.TTS_SPEAKER_WAV_FR, V6Config.TTS_SPEAKER_FR
-        else:
-            wav, name = V6Config.TTS_SPEAKER_WAV_EN, V6Config.TTS_SPEAKER_EN
+        wav = V6Config.speaker_wav(language)
         if wav and os.path.isfile(wav):
             gpt_latent, spk_emb = self.xtts.get_conditioning_latents(
-                audio_path=[wav])
+                audio_path=[self._ensure_wav(wav)])
         else:
+            name = V6Config.TTS_SPEAKER_FR if language == "fr" else V6Config.TTS_SPEAKER_EN
             sp = self.xtts.speaker_manager.speakers[name]
             gpt_latent, spk_emb = sp["gpt_cond_latent"], sp["speaker_embedding"]
         self._latent_cache[language] = (gpt_latent, spk_emb)

@@ -152,10 +152,20 @@ class V6Config:
                           "tts_models/multilingual/multi-dataset/xtts_v2")
     TTS_SPEAKER_FR = _env("TTS_SPEAKER_FR", "Claribel Dervla")  # clean female
     TTS_SPEAKER_EN = _env("TTS_SPEAKER_EN", "Claribel Dervla")  # clean female
-    TTS_SPEAKER_WAV_FR = _env("TTS_SPEAKER_WAV_FR", "")  # overrides name if set
+    TTS_SPEAKER_WAV_FR = _env("TTS_SPEAKER_WAV_FR", "")  # explicit override per lang
     TTS_SPEAKER_WAV_EN = _env("TTS_SPEAKER_WAV_EN", "")
+    TTS_SPEAKER_WAV_AR = _env("TTS_SPEAKER_WAV_AR", "")
     TTS_SAMPLE_RATE    = 24000                          # XTTS-v2 native rate
     TTS_SPEED          = float(_env("TTS_SPEED", "1.0"))
+
+    # Voice cloning — drop reference recordings in v6/audio and they are picked
+    # up automatically by LANGUAGE + GENDER. Filenames just need to contain the
+    # language ("french"/"english"/"arabic") and the gender ("female"/"male"),
+    # e.g. "French-Femal.mp3", "English-Male.wav". An explicit V6_TTS_SPEAKER_WAV_*
+    # path always wins. Default gender is female. mp3 is fine — it is converted
+    # to a cached 24 kHz mono WAV on first use (see speech.TTS._ensure_wav).
+    TTS_VOICE_DIR    = _env("TTS_VOICE_DIR") or os.path.join(_HERE, "audio")
+    TTS_VOICE_GENDER = _env("TTS_VOICE_GENDER", "female").lower()
 
     # XTTS-v2 sampling knobs — quality-leaning defaults. Lower temperature and
     # a firmer repetition penalty reduce slurring and the random artefacts that
@@ -254,6 +264,56 @@ class V6Config:
     def bge_m3_id(cls) -> str:
         return (cls.BGE_M3_LOCAL_DIR if os.path.isdir(cls.BGE_M3_LOCAL_DIR)
                 else cls.BGE_M3_HUB_ID)
+
+    _VOICE_EXT = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
+
+    @classmethod
+    def speaker_wav(cls, lang: str) -> str:
+        """Resolve the reference-voice file for a language.
+
+        Order: explicit V6_TTS_SPEAKER_WAV_<LANG> → a file in TTS_VOICE_DIR whose
+        name contains the language and the configured gender → any file matching
+        the language → "" (fall back to the built-in studio speaker). Picking by
+        language is what makes the spoken voice match the answer's language.
+        """
+        explicit = {"fr": cls.TTS_SPEAKER_WAV_FR, "en": cls.TTS_SPEAKER_WAV_EN,
+                    "ar": cls.TTS_SPEAKER_WAV_AR}.get(lang, "")
+        if explicit and os.path.isfile(explicit):
+            return explicit
+        d = cls.TTS_VOICE_DIR
+        if not d or not os.path.isdir(d):
+            return ""
+        langtok = {"fr": "french", "en": "english", "ar": "arabic"}.get(lang, "english")
+        want_female = cls.TTS_VOICE_GENDER.startswith("f")
+        fallback = ""
+        for name in sorted(os.listdir(d)):
+            nl = name.lower()
+            if not nl.endswith(cls._VOICE_EXT) or langtok not in nl:
+                continue
+            is_female = "femal" in nl or "female" in nl
+            if want_female and is_female:
+                return os.path.join(d, name)
+            if not want_female and "male" in nl and not is_female:
+                return os.path.join(d, name)
+            fallback = fallback or os.path.join(d, name)
+        return fallback
+
+    @classmethod
+    def reference_date(cls):
+        """The 'now' used to resolve relative periods ("last quarter").
+
+        Defaults to the real wall clock. V6_REFERENCE_DATE=YYYY-MM-DD pins it —
+        useful when a runtime's clock is wrong (e.g. a Colab VM whose date is
+        months stale), which otherwise sends "last quarter" to the wrong period.
+        """
+        import datetime
+        raw = _env("REFERENCE_DATE") or _env("TODAY")
+        if raw:
+            try:
+                return datetime.date.fromisoformat(raw.strip())
+            except ValueError:
+                pass
+        return datetime.date.today()
 
     @classmethod
     def output_dir(cls) -> str:
