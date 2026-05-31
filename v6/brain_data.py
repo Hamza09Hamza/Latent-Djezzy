@@ -70,7 +70,21 @@ _DATA_NATURAL = [
     "how many net adds did {w} have {t}",
     "how many subscribers did we win back in {w}",
     "what's our churn in {w} {t}", "how big was the churn in {w}",
+    "how many customers did we lose in {w} during {mo}",
+    "how many customers did we lose during {mo}",
+    # "count" of a REAL entity (subscribers/customers) is data — this is the
+    # disambiguator against the employee/tower "count" unanswerables, which
+    # otherwise drag "subscriber count" into the unanswerable class.
+    "give me the postpaid subscriber count for {w}",
+    "give me the prepaid subscriber count for {w}",
+    "what's the subscriber count in {w}", "subscriber count in {w} {t}",
+    "how many subscribers do we have in {w}", "customer count in {w}",
+    "what's our active subscriber count in {w}",
+    "the total subscriber count for {w} {t}",
+    "how many active customers in {w}", "active base count in {w}",
 ]
+_MONTHS = ["January", "February", "March", "April", "May", "June", "July",
+           "August", "September", "October", "November", "December"]
 _DEF_TEMPLATES = [
     "what does {kpi} mean", "define {kpi}", "explain {kpi}",
     "what is {kpi}", "tell me what {kpi} means",
@@ -620,9 +634,10 @@ def build_dataset(seed: int = 0) -> list[dict]:
     # natural "customers lost/gained" phrasings → data (churn / net adds).
     # Held alongside the count-unanswerables so the brain learns the contrast:
     # lost/gained SUBSCRIBERS is data; employees/cell-towers counts are not.
-    for _ in range(150):
+    for _ in range(220):
         q = _norm(rng.choice(_DATA_NATURAL).format(
-            w=rng.choice(_WILAYAS), t=rng.choice(_TIMES)))
+            w=rng.choice(_WILAYAS), t=rng.choice(_TIMES),
+            mo=rng.choice(_MONTHS)))
         _expand(rows, "data", q, "", [_rag(), _sql_ok()])
 
     # plain data — rag → sql → communicator
@@ -641,8 +656,12 @@ def build_dataset(seed: int = 0) -> list[dict]:
     for _ in range(200):
         _expand(rows, "data", rng.choice(_VIZ_WRAP).format(q=pick()), "",
                 [_rag(), _sql_ok(), _chart()])
-    # data + email
-    for _ in range(150):
+    # data + email — boosted so the "after sql, the email is still pending →
+    # continue to email" mid-trajectory isn't drowned by the much larger
+    # "plain data stops after sql" signal (eval gap: go-email stopped at 0.37).
+    # The continue head can only tell this from the query embedding (the outcome
+    # vector is identical to a finished plain-data turn), so it needs volume.
+    for _ in range(420):
         _expand(rows, "data", rng.choice(_EMAIL_WRAP).format(q=pick()), "",
                 [_rag(), _sql_ok(), _email()])
     # data + report

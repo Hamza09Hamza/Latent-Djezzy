@@ -60,7 +60,14 @@ def _featurize(rows: list[dict], encoder):
         ACTIONS.index(r["label_action"]) if r["label_action"] else -1
         for r in rows])
     y_cont = torch.tensor([float(r["label_continue"]) for r in rows])
-    return X, y_intent, y_action, y_cont
+    # Intent is decided at step 0 (empty outcome) and reused for the rest of
+    # the turn, so it must be TRAINED only on step-0 rows — the ticks whose
+    # situation matches inference. Training it on later ticks both teaches a
+    # signal that's never read AND inflates multi-tick classes (data), which
+    # the inverse-freq weighting then over-corrects (the "count → unanswerable"
+    # basin). A step-0 row is one with no executed steps yet.
+    is_step0 = torch.tensor([len(r.get("step_log", [])) == 0 for r in rows])
+    return X, y_intent, y_action, y_cont, is_step0
 
 
 def _class_weights(y: torch.Tensor, n: int) -> torch.Tensor:
@@ -80,17 +87,19 @@ def main(epochs: int = 160, lr: float = 1e-3, val_frac: float = 0.15) -> None:
     print(f"loaded {len(rows)} rows; encoding with BGE-M3 (one-time)...")
 
     encoder = get_encoder()
-    X, y_intent, y_action, y_cont = _featurize(rows, encoder)
+    X, y_intent, y_action, y_cont, is_step0 = _featurize(rows, encoder)
 
     n_val = max(1, int(len(rows) * val_frac))
     xtr, xva = X[n_val:], X[:n_val]
     itr, iva = y_intent[n_val:], y_intent[:n_val]
     atr, ava = y_action[n_val:], y_action[:n_val]
     ctr, cva = y_cont[n_val:], y_cont[:n_val]
+    s0tr, s0va = is_step0[n_val:], is_step0[:n_val]
 
     head = BrainHead()
     opt = torch.optim.Adam(head.parameters(), lr=lr, weight_decay=1e-4)
-    ce_i = nn.CrossEntropyLoss(weight=_class_weights(itr, len(INTENTS)))
+    # Intent weights + loss use ONLY step-0 rows (see _featurize).
+    ce_i = nn.CrossEntropyLoss(weight=_class_weights(itr[s0tr], len(INTENTS)))
     ce_a = nn.CrossEntropyLoss(weight=_class_weights(atr, len(ACTIONS)))
     pos = ((ctr == 0).sum().clamp(min=1).float()
            / (ctr == 1).sum().clamp(min=1).float())
@@ -101,7 +110,9 @@ def main(epochs: int = 160, lr: float = 1e-3, val_frac: float = 0.15) -> None:
         opt.zero_grad()
         il, al, cl = head(xtr)
         amask = atr >= 0
-        loss = ce_i(il, itr) + bce(cl, ctr)
+        loss = bce(cl, ctr)
+        if s0tr.any():
+            loss = loss + ce_i(il[s0tr], itr[s0tr])
         if amask.any():
             loss = loss + ce_a(al[amask], atr[amask])
         loss.backward()
@@ -111,7 +122,8 @@ def main(epochs: int = 160, lr: float = 1e-3, val_frac: float = 0.15) -> None:
             head.eval()
             with torch.no_grad():
                 il, al, cl = head(xva)
-                iacc = (il.argmax(1) == iva).float().mean().item()
+                im = s0va if s0va.any() else torch.ones_like(iva, dtype=torch.bool)
+                iacc = (il[im].argmax(1) == iva[im]).float().mean().item()
                 vm = ava >= 0
                 aacc = ((al[vm].argmax(1) == ava[vm]).float().mean().item()
                         if vm.any() else 0.0)
