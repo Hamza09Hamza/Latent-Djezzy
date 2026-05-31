@@ -475,9 +475,13 @@ def sql_node(state: dict) -> dict:
 # ── capabilities ─────────────────────────────────────────────────────────
 def chart_node(state: dict) -> dict:
     t0 = time.time()
-    rows, cols = state.get("rows", []), state.get("columns", [])
+    # Use this turn's SQL rows, or — for a cross-turn "chart this data" follow-up
+    # with no SQL this turn — the previous turn's persisted rows (same rule as
+    # template/email via _data_for_artifact). Without this, "create a chart of
+    # this data" had nothing to chart and silently produced no artifact.
+    rows, cols = _data_for_artifact(state)
     png_ok, path, spec = False, "", None
-    if state.get("exec_ok") and rows:
+    if rows:
         # The JSON spec is the primary artifact — the web client renders it as
         # an interactive Recharts chart (figures already frozen by numfmt). The
         # matplotlib PNG stays as the fallback for the notebook / reports.

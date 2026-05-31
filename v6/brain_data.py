@@ -180,6 +180,25 @@ _CROSST_TEMPLATE_QS = [
     "mets les résultats dans un rapport", "exporte en rapport",
 ]
 
+# Cross-turn "now chart the previous result" follow-ups — the chart twin of
+# _CROSST_TEMPLATE_QS. Without these the brain had no learned chart-follow-up
+# and snapped chart requests to the nearest pattern it knew (the report
+# follow-up), so "create a chart of this data" produced a report and a bare
+# "now visualisation" fell through to clarify. Gold action is chart only —
+# the data is already in conversation memory (no rag/sql this turn).
+_CROSST_CHART_QS = [
+    "chart this", "chart that", "chart it", "make a chart", "create a chart",
+    "create a chart of this", "create a chart of this data",
+    "chart of this data", "make a chart of this", "a chart please",
+    "now a chart", "now a graph", "now visualisation", "now visualization",
+    "now a visualisation", "visualize this", "visualize that", "visualise this",
+    "show me a graph", "show it as a chart", "plot this", "plot that",
+    "graph it", "draw a chart", "turn it into a chart", "as a chart",
+    "fais un graphique", "fais un graphique de ça", "mets ça dans un graphique",
+    "fais-en un graphique", "trace ça", "visualise ça", "un graphique",
+    "graphique", "maintenant un graphique", "montre-moi un graphique",
+]
+
 # Performance / executive-report queries — map to fpa_profitability + global_revenue
 _PERFORMANCE_QUERIES = [
     "Q4 {t} performance summary", "Q3 {t} performance review",
@@ -518,6 +537,19 @@ def build_dataset(seed: int = 0) -> list[dict]:
         mem = rng.choice(_data_memory).format(q=pick())
         q = rng.choice(_CROSST_TEMPLATE_QS)
         _terminal(rows, "data", q, mem, [_template(ok=True)])
+
+    # ── cross-turn chart follow-ups (twin of the template block above) ────
+    # "now a chart" / "create a chart of this data" with prior data in memory.
+    # Gold: [chart] immediately — no rag/sql, the numbers are already known.
+    for _ in range(350):
+        mem = rng.choice(_data_memory).format(q=pick())
+        q = rng.choice(_CROSST_CHART_QS)
+        _expand(rows, "data", q, mem, [_chart()])
+    # terminal stop: after the chart succeeds, definitely stop
+    for _ in range(200):
+        mem = rng.choice(_data_memory).format(q=pick())
+        q = rng.choice(_CROSST_CHART_QS)
+        _terminal(rows, "data", q, mem, [_chart(ok=True)])
 
     # ── performance / executive-report traces ────────────────────────────
     # These map broad "Q4 performance", "quarterly results" etc. to the

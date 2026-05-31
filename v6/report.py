@@ -24,6 +24,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .numfmt import humanize_cell
+
 # ── locale strings ────────────────────────────────────────────────────────────
 
 _L = {
@@ -39,28 +41,35 @@ def _t(key: str, lang: str) -> str:
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _fmt_cell(val: Any) -> str:
+def _fmt_cell(col: str, val: Any, lang: str) -> str:
+    """Humanize a table cell the same way the answer text does, so the report
+    shows '2.68 billion DZD', never the raw float '2684113522.9099994'. A
+    pre-frozen '{col}_fmt' on the row wins if present; otherwise we humanize by
+    the column's inferred unit. Strings/dates pass through; None → em dash."""
     if val is None:
         return "—"
-    return str(val)
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return str(val)
+    return humanize_cell(col, val, lang)
 
 
 def _extract_metrics(
     rows: list[dict],
     columns: list[str],
     chart_spec: dict | None,
+    lang: str = "en",
 ) -> list[dict]:
-    """Pull the first few numeric KPIs from the result as metric chips."""
+    """Pull the first few numeric KPIs from the result as metric chips, each
+    formatted with numfmt (so the chip reads '2.68 billion DZD')."""
     if not rows:
         return []
     first = rows[0]
     items: list[dict] = []
     for col in columns:
         val = first.get(col)
-        if not isinstance(val, (int, float)):
+        if not isinstance(val, (int, float)) or isinstance(val, bool):
             continue
-        fmt_key = f"{col}_fmt"
-        fmt_val = first.get(fmt_key) or str(val)
+        fmt_val = first.get(f"{col}_fmt") or humanize_cell(col, val, lang)
         label = col.replace("_", " ").title()
         items.append({"label": label, "value": fmt_val})
         if len(items) >= 4:
@@ -109,7 +118,7 @@ def build_report_spec(
     sections: list[dict] = []
 
     # 1 — Metric chips (top KPIs from first result row)
-    metrics = _extract_metrics(rows, columns, chart_spec)
+    metrics = _extract_metrics(rows, columns, chart_spec, lang)
     if metrics:
         sections.append({"type": "metrics", "items": metrics})
 
@@ -126,7 +135,7 @@ def build_report_spec(
     if rows and columns:
         sections.append({"type": "heading", "text": _t("heading_data", lang)})
         table_rows = [
-            [_fmt_cell(row.get(c)) for c in columns]
+            [_fmt_cell(c, row.get(c), lang) for c in columns]
             for row in rows[:25]
         ]
         sections.append({
