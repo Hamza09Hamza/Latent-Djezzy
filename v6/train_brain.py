@@ -124,7 +124,31 @@ def main(epochs: int = 160, lr: float = 1e-3, val_frac: float = 0.15) -> None:
     os.makedirs(V6Config.MODELS_DIR, exist_ok=True)
     torch.save(head.state_dict(), V6Config.BRAIN_HEAD_PATH)
     print(f"\nsaved → {V6Config.BRAIN_HEAD_PATH}")
-    print("use it:  python3 -m v6.cli")
+
+    # Held-out eval — the number to ACTUALLY trust. The val accuracy printed
+    # above is an IID split of the same synthetic templates, so it runs hot
+    # (95 %+) and says little about generalization. brain_eval.jsonl is a
+    # hand-written, never-templated set; this is the honest score.
+    try:
+        from .eval_brain import EVAL_PATH, evaluate
+        if os.path.isfile(EVAL_PATH):
+            import v6.brain as _b
+            _b._brain = None                      # reload the just-saved head
+            res = evaluate()
+            ck = res["checks"]
+
+            def _p(k: str) -> str:
+                a, n = ck[k]
+                return f"{100 * a / n:.1f}% ({a}/{n})" if n else "n/a"
+
+            print("\nheld-out eval (TRUST THIS, not the val above):")
+            print(f"  intent {_p('intent')} | action {_p('action')} "
+                  f"| continue {_p('continue')}")
+            print("  full per-tag report + misses:  python3 -m v6.eval_brain")
+    except Exception as e:  # noqa: BLE001 — eval is advisory, never fatal
+        print(f"(held-out eval skipped: {e})")
+
+    print("\nuse it:  python3 -m v6.cli")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,85 @@
+// v6/data/brain_eval.jsonl — HAND-WRITTEN, held-out brain evaluation cases.
+// These phrasings are intentionally NOT drawn from brain_data.py's templates,
+// so accuracy here measures generalization, not template memorization. Lines
+// starting with // are comments (skipped by eval_brain.py). Each case asserts
+// any of: expect_intent, expect_action (first action), expect_continue (go vs
+// stop, judged against BRAIN_SEUIL). step_log entries:
+//   {action, ok, error_type, row_bucket, attempt}.
+//
+// ── INTENT: greeting ─────────────────────────────────────────────────────
+{"id":"greet-1","query":"morning! hope you're doing well today","expect_intent":"greeting","tags":["intent","greeting"],"note":"casual greeting, no template match"}
+{"id":"greet-2","query":"thanks a million, that's exactly what I needed","expect_intent":"greeting","tags":["intent","greeting"],"note":"closing thanks"}
+{"id":"greet-3","query":"salam, labas? wach rak?","expect_intent":"greeting","tags":["intent","greeting","darija"],"note":"darija greeting"}
+{"id":"greet-4","query":"bonjour, comment se passe ta journée ?","expect_intent":"greeting","tags":["intent","greeting","fr"],"note":"french greeting"}
+{"id":"greet-5","query":"alright, catch you later then","expect_intent":"greeting","tags":["intent","greeting"],"note":"sign-off"}
+// ── INTENT: meta ─────────────────────────────────────────────────────────
+{"id":"meta-1","query":"what sort of things are you actually able to help me with?","expect_intent":"meta","tags":["intent","meta"],"note":"capability question, natural phrasing"}
+{"id":"meta-2","query":"are you a real analyst or just a bot?","expect_intent":"meta","tags":["intent","meta"],"note":"identity question"}
+{"id":"meta-3","query":"give me a quick rundown of what this assistant does","expect_intent":"meta","tags":["intent","meta"],"note":"overview request"}
+{"id":"meta-4","query":"how does this whole thing work behind the scenes?","expect_intent":"meta","tags":["intent","meta"],"note":"how-it-works"}
+// ── INTENT: definition ───────────────────────────────────────────────────
+{"id":"def-1","query":"what's the actual difference between EBITDA and EBIT?","expect_intent":"definition","tags":["intent","definition"],"note":"comparison definition"}
+{"id":"def-2","query":"in plain words, what does churn really mean?","expect_intent":"definition","tags":["intent","definition"],"note":"plain-language definition"}
+{"id":"def-3","query":"can you explain what ARPU represents?","expect_intent":"definition","tags":["intent","definition"],"note":"explain a KPI"}
+{"id":"def-4","query":"what do we mean by contribution margin here?","expect_intent":"definition","tags":["intent","definition"],"note":"definition, domain-scoped"}
+{"id":"def-5","query":"c'est quoi exactement le taux de recharge ?","expect_intent":"definition","tags":["intent","definition","fr"],"note":"french definition"}
+// ── INTENT: data (plain query → first action rag) ────────────────────────
+{"id":"data-1","query":"how many customers did we lose in Oran during March?","expect_intent":"data","expect_action":"rag","tags":["intent","route","data"],"note":"churn count, fresh query"}
+{"id":"data-2","query":"what were our total earnings in Constantine last quarter?","expect_intent":"data","expect_action":"rag","tags":["intent","route","data"],"note":"revenue, fresh"}
+{"id":"data-3","query":"give me the postpaid subscriber count for Setif","expect_intent":"data","expect_action":"rag","tags":["intent","route","data"],"note":"subscribers, segment"}
+{"id":"data-4","query":"which province had the worst churn last year?","expect_intent":"data","expect_action":"rag","tags":["intent","route","data"],"note":"ranking query"}
+{"id":"data-5","query":"break down our opex by category for 2025","expect_intent":"data","expect_action":"rag","tags":["intent","route","data"],"note":"breakdown"}
+{"id":"data-6","query":"compare net income between Alger and Oran","expect_intent":"data","expect_action":"rag","tags":["intent","route","data"],"note":"comparison"}
+// ── INTENT: unanswerable (plausible but out-of-schema) ───────────────────
+{"id":"unans-1","query":"what's our net promoter score this quarter?","expect_intent":"unanswerable","tags":["intent","unanswerable"],"note":"NPS not in schema"}
+{"id":"unans-2","query":"how many employees work at the Oran branch?","expect_intent":"unanswerable","tags":["intent","unanswerable"],"note":"headcount not in schema"}
+{"id":"unans-3","query":"what's the customer satisfaction rating for prepaid?","expect_intent":"unanswerable","tags":["intent","unanswerable"],"note":"CSAT not in schema"}
+{"id":"unans-4","query":"how many cell towers do we run in Adrar?","expect_intent":"unanswerable","tags":["intent","unanswerable"],"note":"network infra not in schema"}
+{"id":"unans-5","query":"what's the average customer age in Annaba?","expect_intent":"unanswerable","tags":["intent","unanswerable"],"note":"demographics not in schema"}
+// ── INTENT: off_topic (deterministic deflection) ─────────────────────────
+{"id":"off-1","query":"what's the weather like in Algiers today?","expect_intent":"off_topic","tags":["intent","off_topic"],"note":"weather"}
+{"id":"off-2","query":"write me a python script to sort a list of numbers","expect_intent":"off_topic","tags":["intent","off_topic"],"note":"code request"}
+{"id":"off-3","query":"translate 'good morning' into Spanish for me","expect_intent":"off_topic","tags":["intent","off_topic"],"note":"translation"}
+{"id":"off-4","query":"who won the match between USMA and MCA last night?","expect_intent":"off_topic","tags":["intent","off_topic"],"note":"general knowledge"}
+{"id":"off-5","query":"what is the total revenue of the European market in July?","expect_intent":"off_topic","tags":["intent","off_topic"],"note":"out-of-region — Europe is not an Algerian wilaya"}
+// ── ROUTE: fresh visualization, no memory → rag (then sql, chart) ─────────
+{"id":"viz-fresh-1","query":"draw a bar chart of subscribers per province","expect_action":"rag","tags":["route","fresh-chart"],"note":"chart of a fresh query needs sql first"}
+{"id":"viz-fresh-2","query":"give me a line graph of revenue through 2025","expect_action":"rag","tags":["route","fresh-chart"],"note":"fresh trend chart"}
+{"id":"viz-fresh-3","query":"visualize how churn moved over the last six months","expect_action":"rag","tags":["route","fresh-chart"],"note":"fresh chart, natural phrasing"}
+// ── ROUTE: cross-turn chart of the previous result → chart (reuse) ────────
+{"id":"xchart-1","query":"now graph that","memory":"Q: net income by wilaya 2025\nA: 24 rows returned: wilaya | net_income","expect_action":"chart","tags":["route","cross-turn","reuse"],"note":"bare deictic, data already in memory"}
+{"id":"xchart-2","query":"turn it into a chart","memory":"Q: revenue in Oran\nA: total_revenue: 2.1 billion DZD | 1 row","expect_action":"chart","tags":["route","cross-turn","reuse"],"note":"reuse previous result"}
+{"id":"xchart-3","query":"can you show that visually?","memory":"Q: churn trend Setif\nA: 8 rows returned: week_start | churn_rate","expect_action":"chart","tags":["route","cross-turn","reuse"],"note":"reuse, polite phrasing"}
+{"id":"xchart-4","query":"plot it","memory":"Q: arpu by month\nA: 12 rows returned: month | avg_arpu","expect_action":"chart","tags":["route","cross-turn","reuse"],"note":"shortest deictic"}
+// ── ROUTE: fresh chart with a continuation prefix + chart memory → rag ────
+//          (the BJA/Algae bug class: starts like a follow-up but is fresh)
+{"id":"xfresh-1","query":"now plot the churn rate of Alger and Oran for 2025","memory":"Q: revenue trend Bejaia\nA: line chart of the revenue trend rendered (8 points)","expect_action":"rag","tags":["route","fresh-chart","prefix"],"note":"new metric+entities+period despite chart memory"}
+{"id":"xfresh-2","query":"could you next show me net income for Setif as a bar chart?","memory":"Q: revenue trend Bejaia\nA: chart of the previous result produced","expect_action":"rag","tags":["route","fresh-chart","prefix"],"note":"new query behind a continuation prefix"}
+{"id":"xfresh-3","query":"then graph the opex breakdown for the whole year","memory":"Q: subscribers by wilaya\nA: bar chart across wilayas rendered","expect_action":"rag","tags":["route","fresh-chart","prefix"],"note":"fresh opex query after a chart turn"}
+{"id":"xfresh-4","query":"and now visualize subscriber growth in Annaba","memory":"Q: arpu trend\nA: 9 rows charted as a trend line","expect_action":"rag","tags":["route","fresh-chart","prefix"],"note":"fresh entity+metric after chart"}
+// ── ROUTE: cross-turn report → template (reuse) ──────────────────────────
+{"id":"xreport-1","query":"put that into a proper report","memory":"Q: opex by category\nA: 6 rows returned: category | opex","expect_action":"template","tags":["route","cross-turn","reuse"],"note":"report of previous result"}
+{"id":"xreport-2","query":"can you write those numbers up as a report?","memory":"Q: revenue by wilaya\nA: 58 rows returned: wilaya | total_revenue","expect_action":"template","tags":["route","cross-turn","reuse"],"note":"report follow-up"}
+{"id":"xreport-3","query":"make me a one-pager from this","memory":"Q: ebitda margin 2025\nA: ebitda_margin: 32.4% | 1 row","expect_action":"template","tags":["route","cross-turn","reuse"],"note":"report, informal"}
+// ── ROUTE: fresh email (no data yet) → rag ───────────────────────────────
+{"id":"email-fresh-1","query":"email the Oran revenue figures to the finance director","expect_action":"rag","tags":["route","fresh-email"],"note":"needs sql before email"}
+{"id":"email-fresh-2","query":"send a summary of churn in Setif over to Sarah","expect_action":"rag","tags":["route","fresh-email"],"note":"fresh email, named recipient"}
+// ── ROUTE: cross-turn email → email (reuse) ──────────────────────────────
+{"id":"xemail-1","query":"email that to the CFO please","memory":"Q: net income Oran\nA: net_income: 470 million DZD | 1 row","expect_action":"email","tags":["route","cross-turn","reuse"],"note":"email previous result"}
+{"id":"xemail-2","query":"forward those numbers to the operations team","memory":"Q: subscribers by wilaya\nA: 58 rows returned","expect_action":"email","tags":["route","cross-turn","reuse"],"note":"email follow-up"}
+// ── ROUTE: correction follow-up → rag (re-query, not clarify) ─────────────
+{"id":"corr-1","query":"no, I meant opex network versus capex network","memory":"Q: compare opex and capex\nA: 1 row — total_capex: 9.31 billion DZD","expect_action":"rag","tags":["route","correction"],"note":"correction = fresh query, not clarify"}
+{"id":"corr-2","query":"not revenue — I wanted the gross margin","memory":"Q: revenue in Oran\nA: total_revenue: 2.1 billion DZD","expect_action":"rag","tags":["route","correction"],"note":"metric correction"}
+{"id":"corr-3","query":"I actually meant prepaid, not postpaid","memory":"Q: postpaid churn Setif\nA: churn_rate: 3.6%","expect_action":"rag","tags":["route","correction"],"note":"segment correction"}
+// ── CONTINUE / STOP (with a simulated step_log) ──────────────────────────
+{"id":"stop-data","query":"total revenue in Constantine last quarter","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":true,"error_type":"none","row_bucket":"one","attempt":1}],"grounding":0.6,"expect_continue":false,"tags":["stop","plain-data"],"note":"data is in, no capability asked -> stop to communicator"}
+{"id":"go-chart","query":"draw a bar chart of revenue by wilaya","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":true,"error_type":"none","row_bucket":"many","attempt":1}],"grounding":0.6,"expect_continue":true,"expect_action":"chart","tags":["continue","chart-next"],"note":"sql done, chart still pending -> continue to chart"}
+{"id":"stop-chart-done","query":"draw a bar chart of revenue by wilaya","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":true,"error_type":"none","row_bucket":"many","attempt":1},{"action":"chart","ok":true,"error_type":"none","row_bucket":"none","attempt":1}],"grounding":0.6,"expect_continue":false,"tags":["stop","chart-done"],"note":"chart produced -> stop"}
+{"id":"go-email","query":"email the Oran revenue to the finance director","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":true,"error_type":"none","row_bucket":"one","attempt":1}],"grounding":0.6,"expect_continue":true,"expect_action":"email","tags":["continue","email-next"],"note":"sql done, email pending -> continue to email"}
+{"id":"stop-email-done","query":"email the Oran revenue to the finance director","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":true,"error_type":"none","row_bucket":"one","attempt":1},{"action":"email","ok":true,"error_type":"none","row_bucket":"none","attempt":1}],"grounding":0.6,"expect_continue":false,"tags":["stop","email-done"],"note":"email sent -> stop"}
+{"id":"go-report","query":"give me a full report on opex for the year","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":true,"error_type":"none","row_bucket":"many","attempt":1}],"grounding":0.6,"expect_continue":true,"expect_action":"template","tags":["continue","report-next"],"note":"sql done, report pending -> continue to template"}
+{"id":"stop-report-done","query":"give me a full report on opex for the year","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":true,"error_type":"none","row_bucket":"many","attempt":1},{"action":"template","ok":true,"error_type":"none","row_bucket":"none","attempt":1}],"grounding":0.6,"expect_continue":false,"tags":["stop","report-done"],"note":"report filled -> stop"}
+{"id":"go-sql-retry","query":"compare churn between prepaid and postpaid by wilaya","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":false,"error_type":"sql_error","row_bucket":"none","attempt":1}],"grounding":0.6,"expect_continue":true,"expect_action":"sql","tags":["continue","retry"],"note":"first sql error -> retry sql"}
+{"id":"stop-sql-norows","query":"total revenue in Timimoun for 2019","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":false,"error_type":"sql_no_rows","row_bucket":"zero","attempt":1}],"grounding":0.5,"expect_continue":false,"tags":["stop","no-rows"],"note":"empty result -> stop, communicator says no data"}
+{"id":"stop-email-norecip","query":"email this out","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1},{"action":"sql","ok":true,"error_type":"none","row_bucket":"one","attempt":1},{"action":"email","ok":false,"error_type":"email_no_recipient","row_bucket":"none","attempt":1}],"grounding":0.6,"expect_continue":false,"tags":["stop","email-no-recipient"],"note":"no recipient -> stop, communicator asks for one"}
+{"id":"stop-def","query":"what does gross margin mean?","step_log":[{"action":"rag","ok":true,"error_type":"none","row_bucket":"none","attempt":1}],"grounding":0.7,"expect_continue":false,"tags":["stop","definition"],"note":"definition answered from rag -> stop"}

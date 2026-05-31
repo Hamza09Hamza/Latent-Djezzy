@@ -56,6 +56,21 @@ _DATA_TEMPLATES = [
     "total {kpi} {t}", "{kpi} by wilaya", "give me the {kpi} for {w}",
     "{kpi} in {w} {t}", "top 5 wilayas by {kpi}", "{seg} {kpi} {t}",
 ]
+# Natural "customers lost / gained / added" phrasings. These ARE data (churn,
+# net adds, gross adds — real KPIs), and must NOT be confused with the "how
+# many employees/cell towers" count-unanswerables. The contrast (lost/gained
+# SUBSCRIBERS = data; employees/towers = unanswerable) is what the brain learns.
+_DATA_NATURAL = [
+    "how many customers did we lose in {w} {t}",
+    "how many subscribers did we lose in {w}",
+    "how many customers churned in {w} {t}",
+    "how many people left us in {w} {t}",
+    "how many customers did we gain in {w} {t}",
+    "how many new subscribers did we add in {w}",
+    "how many net adds did {w} have {t}",
+    "how many subscribers did we win back in {w}",
+    "what's our churn in {w} {t}", "how big was the churn in {w}",
+]
 _DEF_TEMPLATES = [
     "what does {kpi} mean", "define {kpi}", "explain {kpi}",
     "what is {kpi}", "tell me what {kpi} means",
@@ -69,6 +84,13 @@ _GREETINGS = [
     "howdy", "greetings", "thank you", "much appreciated", "appreciate it",
     "perfect, thanks", "awesome thanks", "see you later", "take care",
     "have a good day", "good day", "hiya", "ok thank you", "thanks again",
+    # Darija / Algerian colloquial greetings + how-are-yous (eval gap: a
+    # "salam, labas? wach rak?" was misread as off_topic).
+    "salam alikoum", "labas", "labas?", "wach rak", "wesh rak", "wesh",
+    "wach kayen", "kifech", "kifach rak", "sahha", "sah",
+    "salam, labas?", "labas alik", "saha", "sbah lkhir", "salamou alaykoum",
+    "merci bzef", "choukran", "y3aytik saha", "tbarkallah",
+    "comment ça va", "ça va", "comment vas-tu", "comment se passe ta journée",
 ]
 _META = [
     "what can you do", "who are you", "what kind of questions can i ask",
@@ -116,6 +138,15 @@ _OFFTOPIC = [
     "explain quantum physics", "help me write an essay",
     "what's the meaning of life", "set an alarm for 7am",
     "summarize this article for me",
+    # out-of-region geography — a real KPI word ("revenue", "subscribers")
+    # but a place Djezzy doesn't operate. The metric must NOT pull it into the
+    # data path (eval gap: "total revenue of the European market" → data).
+    "what is the total revenue in europe", "revenue in france last quarter",
+    "how much did we make in the us market", "net income in morocco this year",
+    "subscribers in tunisia", "arpu in the middle east", "revenue in paris",
+    "churn rate in germany", "total revenue of the european market",
+    "how many customers do we have in spain", "revenue in dubai",
+    "what's our market share in egypt", "ebitda in the gulf region",
 ]
 _OFFTOPIC_FR = [
     # code
@@ -150,10 +181,44 @@ _FAKE_KPIS = ["quantum score", "blockchain ratio", "customer happiness index",
               "network satisfaction score", "satisfaction score",
               "customer satisfaction", "net promoter score",
               "service quality index", "network coverage rating",
-              "call drop rate", "complaint resolution time"]
+              "call drop rate", "complaint resolution time",
+              # headcount / HR — plausible but not in the schema (eval gap:
+              # "how many employees work at the Oran branch" → data).
+              "number of employees", "employee headcount", "staff count",
+              "number of agents", "store count", "number of shops",
+              "employee satisfaction", "staff turnover rate",
+              # network infrastructure — sounds telecom but no such table
+              # (eval gap: "how many cell towers in Adrar" → data).
+              "number of cell towers", "tower count", "number of sites",
+              "network coverage percentage", "number of base stations",
+              "fiber kilometers deployed", "spectrum holdings",
+              # customer demographics — not in the schema (eval gap:
+              # "average customer age" → data).
+              "average customer age", "customer age", "customer gender split",
+              "average household income", "number of new sign-up stores"]
 _UNANSWERABLE_TEMPLATES = [
     "what is the {fake}", "show me the {fake}", "give me the {fake} for {w}",
     "what was the {fake} {t}",
+]
+# Count-phrasing unanswerables — "how many X …". These are bare count nouns
+# (no "number of" prefix) so the template reads naturally, and they cover the
+# eval gaps where headcount/infra/demographics counts were read as data.
+_UNANS_COUNT_NOUNS = [
+    "employees", "staff", "agents", "shops", "stores", "branches",
+    "cell towers", "towers", "sites", "base stations", "antennas",
+    "complaints", "support tickets", "contracts signed", "new hires",
+]
+_UNANS_COUNT_TEMPLATES = [
+    "how many {n} do we have", "how many {n} do we have in {w}",
+    "how many {n} are there in {w}", "how many {n} work in {w}",
+    "what's the number of {n} in {w}", "count the {n} in {w}",
+]
+# Demographic unanswerables (age/gender/income are not in the schema).
+_UNANS_DEMO = [
+    "what's the average customer age", "what is the average customer age in {w}",
+    "how old are our customers", "what's the age breakdown of subscribers",
+    "what's the customer gender split", "what's the gender split in {w}",
+    "what is the average household income of our customers",
 ]
 _VIZ_WRAP = ["{q} as a chart", "chart {q}", "plot {q}", "visualize {q}",
              "{q}, show me a graph", "{q} in a bar chart", "draw {q}"]
@@ -178,6 +243,12 @@ _CROSST_TEMPLATE_QS = [
     "génère un rapport", "crée un rapport", "fais un rapport",
     "dans un rapport s'il te plaît", "rapport", "un rapport",
     "mets les résultats dans un rapport", "exporte en rapport",
+    # report synonyms (eval gap: "make me a one-pager" routed to chart)
+    "make me a one-pager", "make it a one-pager", "one-pager", "a one pager",
+    "write it up", "write that up", "write those numbers up as a report",
+    "a write-up please", "make a summary document", "summarize it in a document",
+    "draft a brief on this", "make a one-page summary", "document this for me",
+    "prépare une note", "fais une synthèse", "rédige un compte rendu",
 ]
 
 # Cross-turn "now chart the previous result" follow-ups — the chart twin of
@@ -222,6 +293,27 @@ _CROSST_CHART_QS = [
     "fais un graphique", "fais un graphique de ça", "mets ça dans un graphique",
     "fais-en un graphique", "trace ça", "visualise ça", "un graphique",
     "graphique", "maintenant un graphique", "montre-moi un graphique",
+]
+
+# Cross-turn "email the previous result to <recipient>" follow-ups — the email
+# twin of _CROSST_TEMPLATE_QS / _CROSST_CHART_QS, and a real eval gap: with
+# data already in memory, "email that to the CFO" re-ran rag instead of just
+# emailing the existing result. A recipient is named (so the email can send),
+# but NO new query is described → gold action is email only, no rag/sql.
+_CROSST_EMAIL_QS = [
+    "email that to the CFO", "email that to the finance director",
+    "email this to the director", "send it to Sarah",
+    "send those numbers to operations", "send that over to finance",
+    "forward that to the manager", "forward those numbers to the team",
+    "forward it to the ops team", "mail it to the CEO",
+    "email those results to marketing", "can you email that to the CFO?",
+    "email that to the finance team please", "send this to the director",
+    "forward these figures to management", "email it over to Sarah",
+    # French
+    "envoie ça au directeur financier", "envoie-le à Sarah",
+    "transfère ça à l'équipe", "envoie ces chiffres aux opérations",
+    "envoie ça au responsable", "transfère-le au directeur",
+    "envoie ces résultats au marketing", "fais suivre ça à la direction",
 ]
 
 # Continuation prefixes — words that START a follow-up turn. They appear on
@@ -508,6 +600,15 @@ def build_dataset(seed: int = 0) -> list[dict]:
                 _fill(rng.choice(_UNANSWERABLE_TEMPLATES), kpis, rng), "", [])
     for p in _proto("unanswerable"):
         _expand(rows, "unanswerable", p, "", [])
+    # count-phrasing unanswerables ("how many employees / cell towers in X")
+    for _ in range(120):
+        q = _norm(rng.choice(_UNANS_COUNT_TEMPLATES).format(
+            n=rng.choice(_UNANS_COUNT_NOUNS), w=rng.choice(_WILAYAS)))
+        _expand(rows, "unanswerable", q, "", [])
+    # demographic unanswerables (age / gender / income)
+    for _ in range(70):
+        q = _norm(rng.choice(_UNANS_DEMO).format(w=rng.choice(_WILAYAS)))
+        _expand(rows, "unanswerable", q, "", [])
 
     # a pool of plain data queries reused by every data trace shape
     base = [_fill(rng.choice(_DATA_TEMPLATES), kpis, rng) for _ in range(400)]
@@ -515,6 +616,14 @@ def build_dataset(seed: int = 0) -> list[dict]:
 
     def pick() -> str:
         return rng.choice(base)
+
+    # natural "customers lost/gained" phrasings → data (churn / net adds).
+    # Held alongside the count-unanswerables so the brain learns the contrast:
+    # lost/gained SUBSCRIBERS is data; employees/cell-towers counts are not.
+    for _ in range(150):
+        q = _norm(rng.choice(_DATA_NATURAL).format(
+            w=rng.choice(_WILAYAS), t=rng.choice(_TIMES)))
+        _expand(rows, "data", q, "", [_rag(), _sql_ok()])
 
     # plain data — rag → sql → communicator
     for _ in range(168):
@@ -599,6 +708,20 @@ def build_dataset(seed: int = 0) -> list[dict]:
         mem = rng.choice(_data_memory).format(q=pick())
         q = rng.choice(_CROSST_CHART_QS)
         _terminal(rows, "data", q, mem, [_chart(ok=True)])
+
+    # ── cross-turn email follow-ups (twin of the chart/template blocks) ──────
+    # "email that to the CFO" with prior data in memory and a NAMED recipient.
+    # Gold: [email] immediately — the data is known, no rag/sql this turn.
+    # (eval gap: these re-ran rag instead of emailing the existing result.)
+    for _ in range(320):
+        mem = rng.choice(_data_memory).format(q=pick())
+        q = rng.choice(_CROSST_EMAIL_QS)
+        _expand(rows, "data", q, mem, [_email(ok=True)])
+    # terminal stop: after the email is sent, definitely stop
+    for _ in range(200):
+        mem = rng.choice(_data_memory).format(q=pick())
+        q = rng.choice(_CROSST_EMAIL_QS)
+        _terminal(rows, "data", q, mem, [_email(ok=True)])
 
     # ── fresh contentful chart with a continuation prefix (the BJA/Algae bug) ──
     # "could you now please plot the churn rate of Alger and Oran across 2025"
