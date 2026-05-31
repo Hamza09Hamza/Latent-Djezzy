@@ -186,6 +186,31 @@ _CROSST_TEMPLATE_QS = [
 # follow-up), so "create a chart of this data" produced a report and a bare
 # "now visualisation" fell through to clarify. Gold action is chart only —
 # the data is already in conversation memory (no rag/sql this turn).
+# Correction follow-ups — user rejects a previous answer and specifies what they
+# really wanted. Gold: rag → sql (fresh query with the clarified intent).
+# Without these traces the brain saw "no between X and Y" as ambiguous and
+# routed to clarify, repeating the question the user just corrected.
+_CORRECTION_QS = [
+    "no between {a} and {b}", "no, between {a} and {b}",
+    "no I meant {a} vs {b}", "no I want {a} vs {b}",
+    "not {a}, I meant {b}", "I meant {a} not {b}",
+    "compare {a} with {b} not {c}", "no compare {a} and {b}",
+    "I said {a} and {b} comparison", "show {a} and {b} together",
+    "I want {a} compared to {b}", "actually {a} versus {b}",
+    "correction: {a} vs {b}", "I meant the {a} vs {b} comparison",
+    "non entre {a} et {b}", "non je voulais dire {a} vs {b}",
+    "compare {a} et {b}", "je voulais dire {a} et {b}",
+    "montre {a} et {b} ensemble", "non, {a} vs {b}",
+]
+_CORRECTION_PAIRS = [
+    ("opex", "capex"), ("opex network", "capex network"),
+    ("b2b", "b2c"), ("prepaid", "postpaid"),
+    ("revenue", "margin"), ("churn rate", "arpu"),
+    ("net income", "ebitda"), ("capex total", "opex total"),
+    ("national", "wilaya"), ("Alger", "Oran"),
+    ("data usage", "voice usage"), ("active base", "net adds"),
+]
+
 _CROSST_CHART_QS = [
     "chart this", "chart that", "chart it", "make a chart", "create a chart",
     "create a chart of this", "create a chart of this data",
@@ -661,6 +686,39 @@ def build_dataset(seed: int = 0) -> list[dict]:
     for _ in range(40):
         _expand(rows, "unanswerable",
                 _fill(rng.choice(_UNANSWERABLE_TEMPLATES), kpis, rng), "", [])
+
+    # ── correction follow-ups ────────────────────────────────────────────
+    # User rejects a previous wrong answer and specifies what they actually
+    # wanted. Gold: rag → sql (fresh query — the old data is stale/wrong).
+    # These teach the brain that "no between X and Y" is a data request,
+    # not a clarification question to bounce back to the user.
+    _wrong_mem = [
+        "Q: {q}\nA: 1 row — total_capex: 9.31 billion DZD",
+        "Q: {q}\nA: 6 rows — avg_contribution_margin_b2b | avg_contribution_margin_b2c | ...",
+        "Q: {q}\nA: 1 row — total_opex_network: 13.43 billion DZD",
+        "Q: {q}\nA: chart produced of capex columns only",
+        "Q: {q}\nA: 18 rows — avg_churn_rate by week_start",
+    ]
+    for _ in range(250):
+        a, b = rng.choice(_CORRECTION_PAIRS)
+        c = rng.choice([x for x in _WILAYAS + ["prepaid", "postpaid"] if x not in (a, b)])
+        tmpl = rng.choice(_CORRECTION_QS)
+        try:
+            q = tmpl.format(a=a, b=b, c=c)
+        except KeyError:
+            q = tmpl.format(a=a, b=b, c=a)
+        mem = rng.choice(_wrong_mem).format(q=pick())
+        _expand(rows, "data", q, mem, [_rag(), _sql_ok()])
+    # terminal after correction succeeds → stop
+    for _ in range(120):
+        a, b = rng.choice(_CORRECTION_PAIRS)
+        tmpl = rng.choice(_CORRECTION_QS[:8])  # simpler patterns for terminal
+        try:
+            q = tmpl.format(a=a, b=b, c=a)
+        except KeyError:
+            q = f"no between {a} and {b}"
+        mem = rng.choice(_wrong_mem).format(q=pick())
+        _terminal(rows, "data", q, mem, [_rag(), _sql_ok()])
 
     # ── noise augmentation ───────────────────────────────────────────────
     # Same gold labels, STT-perturbed queries (EN + FR). Broadens embedding

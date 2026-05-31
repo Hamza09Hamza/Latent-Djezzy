@@ -282,13 +282,22 @@ def build_chart_spec(rows: list[dict], columns: list[str], query: str = "",
                 "data": [{c: v, f"{c}_fmt": humanize_cell(c, v, lang)}],
                 "meta": {**base_meta, "kind": "single"},
             }
+        # Keep only the dominant unit group so DZD and % don't share one axis.
+        from collections import Counter
+        unit_groups: dict[str, list[str]] = {}
+        for c in numeric:
+            u = unit_for_column(c) or "DZD"
+            unit_groups.setdefault(u, []).append(c)
+        dominant_unit = max(unit_groups, key=lambda u: len(unit_groups[u]))
+        chartable = unit_groups[dominant_unit]
         data = [{"metric": _pretty_label(c), "value": rows[0].get(c),
                  "value_fmt": humanize_cell(c, rows[0].get(c), lang)}
-                for c in numeric]
+                for c in chartable]
         return {
             "type": "bar", "title": title,
             "x": {"key": "metric", "label": "Metric"},
-            "series": [{"key": "value", "label": "Value", "unit": ""}],
+            "series": [{"key": "value", "label": "Value",
+                        "unit": dominant_unit if dominant_unit != "DZD" else ""}],
             "data": data,
             "meta": {**base_meta, "kind": "metrics"},
         }

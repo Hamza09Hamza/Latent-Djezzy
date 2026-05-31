@@ -79,12 +79,17 @@ def unit_for_column(col: str) -> str | None:
         return "min"
     if "tenure" in stripped or stripped.endswith("_months"):
         return "months"
-    if any(k in stripped for k in
-           ("rate", "ratio", "margin", "share", "pct", "percent")):
+    # "margin" only qualifies as a rate when it's the final word (ebitda_margin,
+    # gross_margin). Columns like contribution_margin_b2b or contribution_margin_b2c
+    # have "margin" in the middle and hold absolute DZD amounts, not a ratio.
+    _last_word = stripped.rsplit("_", 1)[-1]
+    if any(k in stripped for k in ("rate", "ratio", "share", "pct", "percent")):
+        return "%"
+    if _last_word == "margin":
         return "%"
     if any(k in stripped for k in
            ("revenue", "income", "opex", "capex", "ebitda", "ebit",
-            "arpu", "fcf", "ocf", "recharge", "cost")):
+            "arpu", "fcf", "ocf", "recharge", "cost", "contribution")):
         return "DZD"
     if any(k in stripped for k in
            ("subscriber", "active_base", "adds", "count", "base")):
