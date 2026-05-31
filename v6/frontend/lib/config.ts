@@ -87,7 +87,7 @@ export function wsUrl(cfg: ServerConfig): string {
     : base.startsWith("http")
     ? "ws" + base.slice(4)
     : base;
-  return `${wsBase}/ws?token=${encodeURIComponent(cfg.apiToken)}`;
+  return `${wsBase}/ws?token=${encodeURIComponent(cfg.apiToken)}&ngrok-skip-browser-warning=true`;
 }
 
 export function httpUrl(cfg: ServerConfig, path: string): string {
