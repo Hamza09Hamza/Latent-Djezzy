@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .numfmt import humanize_cell
+from .chartspec import build_chart_spec, _pretty_label
 
 # ── locale strings ────────────────────────────────────────────────────────────
 
@@ -115,6 +116,12 @@ def build_report_spec(
     report_title = title or _make_title(query, lang)
     subtitle = _t("subtitle", lang)
 
+    # Auto-generate a chart spec when the caller didn't provide one (i.e. the
+    # brain routed sql → template without a separate chart step). The report
+    # should always include a visual when the data is chartable.
+    if chart_spec is None and rows and columns:
+        chart_spec = build_chart_spec(rows, columns, query, lang=lang)
+
     sections: list[dict] = []
 
     # 1 — Metric chips (top KPIs from first result row)
@@ -127,11 +134,11 @@ def build_report_spec(
     if answer_text:
         sections.append({"type": "text", "text": answer_text})
 
-    # 3 — Chart (reuses the ChartSpec; renders with Recharts in the browser)
+    # 3 — Chart (reuses or auto-built ChartSpec; renders with Recharts in the browser)
     if chart_spec:
         sections.append({"type": "chart", "spec": chart_spec})
 
-    # 4 — Data table (capped at 25 rows to keep the report readable)
+    # 4 — Data table (capped at 25 rows; human-readable column headers)
     if rows and columns:
         sections.append({"type": "heading", "text": _t("heading_data", lang)})
         table_rows = [
@@ -140,7 +147,7 @@ def build_report_spec(
         ]
         sections.append({
             "type": "table",
-            "columns": columns,
+            "columns": [_pretty_label(c) for c in columns],
             "rows": table_rows,
         })
 

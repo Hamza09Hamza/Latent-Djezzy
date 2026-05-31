@@ -55,6 +55,16 @@ def validate_sql(sql: str, schema=None) -> dict:
         errors.append("not a read-only SELECT/WITH statement")
     if _BLOCKED.search(s):
         errors.append("contains a blocked write/DDL keyword")
+    # SQLite does not support FULL OUTER JOIN or RIGHT JOIN. Catch statically
+    # so the retry gets a correction hint before the DB even tries to run it.
+    if re.search(r"\bfull\s+outer\s+join\b", low):
+        errors.append(
+            "FULL OUTER JOIN is not supported by SQLite; "
+            "rewrite using LEFT JOIN or a UNION ALL of two queries")
+    if re.search(r"\bright\s+(?:outer\s+)?join\b", low):
+        errors.append(
+            "RIGHT JOIN is not supported by SQLite; "
+            "swap the table order and use LEFT JOIN instead")
 
     if schema is not None:
         refs = re.findall(r"\b(?:from|join)\s+`?([a-zA-Z_]\w*)`?", s,
@@ -211,6 +221,20 @@ def correction_hint(issues: list[str], entities: dict,
     if any("does not exist in table" in i for i in issues):
         bad = [i for i in issues if "does not exist in table" in i]
         parts.append("Fix the missing columns: " + "; ".join(bad) + ".")
+    if any("FULL OUTER JOIN" in i for i in issues):
+        parts.append(
+            "SQLite does not support FULL OUTER JOIN. To combine prepaid and "
+            "postpaid data by wilaya use: "
+            "SELECT dl.wilaya, AVG(p.churn_rate) AS prepaid_churn, "
+            "AVG(pp.churn_rate) AS postpaid_churn "
+            "FROM prepaid_kpi p "
+            "JOIN postpaid_kpi pp ON p.location_id = pp.location_id "
+            "JOIN dim_location dl ON p.location_id = dl.location_id "
+            "GROUP BY dl.wilaya ORDER BY prepaid_churn DESC LIMIT 1000")
+    if any("RIGHT JOIN" in i for i in issues):
+        parts.append(
+            "SQLite does not support RIGHT JOIN. Swap the table order and use "
+            "LEFT JOIN instead, or restructure the query.")
     return " ".join(parts)
 
 
