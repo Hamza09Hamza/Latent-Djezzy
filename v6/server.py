@@ -35,6 +35,18 @@ import os
 import secrets
 import tempfile
 
+# NOTE: these FastAPI symbols MUST be imported at module level, not inside
+# _build_app(). With `from __future__ import annotations` (line 1) every type
+# hint is a string, and FastAPI resolves a route's annotations (e.g. the
+# WebSocket handler's `socket: WebSocket`) by looking them up in the handler's
+# __globals__ — the module namespace. If WebSocket/UploadFile live only inside
+# _build_app(), that lookup fails, FastAPI can't bind the parameter, and the
+# /ws handshake is rejected with an opaque HTTP 403. Keep them here.
+from fastapi import (FastAPI, Header, HTTPException, Request, UploadFile,
+                     File, WebSocket, WebSocketDisconnect)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+
 from .config import V6Config
 from .state import initial_state
 
@@ -199,11 +211,6 @@ def _run_pipeline(question: str, thread: str, emit, *, want_audio: bool) -> None
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 def _build_app():
-    from fastapi import (FastAPI, Header, HTTPException, Request, UploadFile,
-                         File, WebSocket, WebSocketDisconnect)
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-
     app = FastAPI(title="Djezzy Voice Assistant API")
     app.add_middleware(
         CORSMiddleware,
