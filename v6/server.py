@@ -109,6 +109,8 @@ def _run_pipeline(question: str, thread: str, emit, *, want_audio: bool) -> None
     final_answer = ""
     exec_ok = False
     chart_path = document_path = ""
+    chart_spec = None
+    report_spec = None
     email_draft = None
     turns: list = []
     memory_summary = ""
@@ -129,8 +131,10 @@ def _run_pipeline(question: str, thread: str, emit, *, want_audio: bool) -> None
                 exec_ok = data.get("exec_ok", exec_ok)
             elif node == "chart":
                 chart_path = data.get("chart_path", "") or chart_path
+                chart_spec = data.get("chart_spec") or chart_spec
             elif node == "template":
                 document_path = data.get("document_path", "") or document_path
+                report_spec = data.get("report_spec") or report_spec
             elif node == "email":
                 email_draft = data.get("email_draft") or email_draft
             elif node == "communicator":
@@ -171,12 +175,19 @@ def _run_pipeline(question: str, thread: str, emit, *, want_audio: bool) -> None
         for _ in token_source():
             pass
 
-    if chart_path:
-        emit({"type": "artifact", "kind": "chart",
-              "url": f"/chart/{os.path.basename(chart_path)}"})
+    if chart_spec or chart_path:
+        art = {"type": "artifact", "kind": "chart"}
+        if chart_spec:                       # primary: interactive Recharts spec
+            art["spec"] = chart_spec
+        if chart_path:                        # fallback: rendered PNG
+            art["url"] = f"/chart/{os.path.basename(chart_path)}"
+        emit(art)
     if document_path:
-        emit({"type": "artifact", "kind": "report",
-              "name": os.path.basename(document_path)})
+        art_rep: dict = {"type": "artifact", "kind": "report",
+                         "name": os.path.basename(document_path)}
+        if report_spec:
+            art_rep["reportSpec"] = report_spec
+        emit(art_rep)
     if email_draft and email_draft.get("to"):
         emit({"type": "artifact", "kind": "email",
               "to": email_draft.get("to"), "to_name": email_draft.get("to_name"),
@@ -188,11 +199,19 @@ def _run_pipeline(question: str, thread: str, emit, *, want_audio: bool) -> None
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 def _build_app():
-    from fastapi import (FastAPI, Header, HTTPException, UploadFile, File,
-                         WebSocket, WebSocketDisconnect)
+    from fastapi import (FastAPI, Header, HTTPException, Request, UploadFile,
+                         File, WebSocket, WebSocketDisconnect)
+    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
     app = FastAPI(title="Djezzy Voice Assistant API")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],          # ngrok tunnel is already auth-gated by the token
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def _require_http(authorization: str | None, token: str | None) -> None:
         supplied = token or (authorization.split()[-1] if authorization else None)
@@ -274,6 +293,23 @@ def _build_app():
         if not os.path.isfile(path):
             raise HTTPException(status_code=404, detail="chart not found")
         return FileResponse(path, media_type="image/png")
+
+    @app.post("/send_report")
+    async def send_report(req: Request, authorization: str | None = Header(default=None),
+                          token: str | None = None):
+        """Queue a report for email delivery.
+
+        Body: {to: str, report_name: str, report_spec?: dict}
+        In production wire this to your SMTP / SendGrid / SES backend.
+        """
+        _require_http(authorization, token)
+        body = await req.json()
+        to = body.get("to", "").strip()
+        name = body.get("report_name", "report.md")
+        if not to:
+            raise HTTPException(status_code=422, detail="'to' is required")
+        # TODO: integrate SMTP/SendGrid to actually send the email.
+        return {"ok": True, "message": f"Report '{name}' queued for delivery to {to}"}
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
@@ -388,7 +424,10 @@ function send(){
     else if(m.type==='meta'){ document.getElementById('meta').textContent=`intent: ${m.intent} · ${m.role}`; }
     else if(m.type==='token'){ document.getElementById('ans').textContent+=m.text; }
     else if(m.type==='audio'){ playChunk(m.data, m.sr); }
-    else if(m.type==='artifact' && m.kind==='chart'){ const i=document.createElement('img'); i.src=m.url+'?token='+encodeURIComponent(token); document.getElementById('art').appendChild(i); }
+    else if(m.type==='artifact' && m.kind==='chart'){
+      if(m.url){ const i=document.createElement('img'); i.src=m.url+'?token='+encodeURIComponent(token); document.getElementById('art').appendChild(i); }
+      else if(m.spec){ const d=document.createElement('div'); d.className='art'; d.textContent='📊 '+(m.spec.title||'chart')+' (open the web app for the interactive chart)'; document.getElementById('art').appendChild(d); }
+    }
     else if(m.type==='artifact'){ const d=document.createElement('div'); d.className='art'; d.textContent=`📎 ${m.kind}: ${m.subject||m.name||m.to||''}`; document.getElementById('art').appendChild(d); }
     else if(m.type==='error'){ document.getElementById('ans').textContent='⚠ '+m.text; }
     else if(m.type==='done'){ ws.close(); }

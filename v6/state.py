@@ -52,8 +52,10 @@ class AgentState(TypedDict, total=False):
 
     # ── capability artifacts ─────────────────────────────────────────────
     chart_path: str
+    chart_spec: dict             # typed chart spec (JSON) for the web client
     email_draft: dict            # {to, subject, body, status: "draft"|...}
     document_path: str
+    report_spec: dict            # rich ReportSpec JSON for the web client
 
     # ── output ───────────────────────────────────────────────────────────
     thoughts: list[dict]         # streamed UI feed: {kind, text}
@@ -86,7 +88,8 @@ def initial_state(query: str, thread_id: str = "default") -> dict:
         "sql": "", "sql_valid": False, "sql_issues": [],
         "rows": [], "columns": [], "exec_ok": False,
         # capability artifacts
-        "chart_path": "", "document_path": "", "email_draft": None,
+        "chart_path": "", "chart_spec": {}, "document_path": "",
+        "email_draft": None, "report_spec": {},
         # output
         "thoughts": [], "final_answer": "", "errors": [],
         "trace": [], "timings": {},

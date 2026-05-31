@@ -22,6 +22,8 @@ import time
 
 from .brain import get_brain, row_bucket
 from .capabilities import compose_email_draft, fill_report, make_chart
+from .chartspec import build_chart_spec
+from .report import build_report_spec
 from .config import V6Config
 from .entities import get_resolver
 from .knowledge import get_retriever
@@ -474,22 +476,33 @@ def sql_node(state: dict) -> dict:
 def chart_node(state: dict) -> dict:
     t0 = time.time()
     rows, cols = state.get("rows", []), state.get("columns", [])
-    ok, path = False, ""
+    png_ok, path, spec = False, "", None
     if state.get("exec_ok") and rows:
+        # The JSON spec is the primary artifact — the web client renders it as
+        # an interactive Recharts chart (figures already frozen by numfmt). The
+        # matplotlib PNG stays as the fallback for the notebook / reports.
+        spec = build_chart_spec(rows, cols, state["query"],
+                                lang_code(state["query"]),
+                                sql=state.get("sql", ""),
+                                routing=state.get("routing"))
         res = make_chart(rows, cols, state["query"])
-        ok, path = res["ok"], res.get("path", "")
+        png_ok, path = res["ok"], res.get("path", "")
+    ok = png_ok or bool(spec)
     entry = {"action": "chart", "ok": ok,
              "error_type": "none" if ok else "artifact_failed",
              "row_bucket": "none", "attempt": _attempt(state, "chart")}
     out = {
         "step_log": _step(state, entry),
         "thoughts": _thoughts(state, {"kind": "thinking",
-            "text": "Chart saved." if ok else "I couldn't chart this result."}),
-        "trace": _trace(state, f"chart: ok={ok}"),
+            "text": "Chart ready." if ok else "I couldn't chart this result."}),
+        "trace": _trace(state, f"chart: ok={ok} "
+                               f"type={spec.get('type') if spec else '-'}"),
         "timings": _timing(state, "chart_ms", (time.time() - t0) * 1000),
     }
-    if ok:
+    if path:
         out["chart_path"] = path
+    if spec:
+        out["chart_spec"] = spec
     return out
 
 
@@ -574,6 +587,14 @@ def template_node(state: dict) -> dict:
     }
     if ok:
         out["document_path"] = res["path"]
+        out["report_spec"] = build_report_spec(
+            query=state.get("query", ""),
+            answer_text=state.get("final_answer", ""),
+            chart_spec=state.get("chart_spec") or None,
+            rows=rows,
+            columns=cols,
+            lang=state.get("routing", {}).get("lang", "en"),
+        )
     return out
 
 
