@@ -72,8 +72,19 @@ def _pick_role(result: dict) -> tuple[str | None, str]:
         return "chat", answer
     if intent == "definition":
         return "polish", answer
+    # An artifact (chart/report/email) produced from carried data has no fresh
+    # SQL this turn (exec_ok False). Speak the communicator's success line
+    # verbatim — NEVER fall through to the "clarify" branch below, which would
+    # tell the user we can't do the thing we just did (the rendered chart bug).
+    has_artifact = bool(result.get("chart_path") or result.get("chart_spec")
+                        or result.get("document_path")
+                        or result.get("email_draft"))
     if result.get("document_path") and not exec_ok:
         return None, "Report generated from the previous result."
+    if has_artifact and not exec_ok:
+        # strip the 📊/📄/📧 capability notes so we don't speak a file path
+        clean = answer.split("📧")[0].split("📊")[0].split("📄")[0].strip()
+        return None, clean or answer
     low = answer.lower()
     if any(p in low for p in ("couldn't build", "failed to run", "no matching rows",
                               "wasn't able to pull", "no data found")):
@@ -156,7 +167,8 @@ def _run_pipeline(question: str, thread: str, emit, *, want_audio: bool) -> None
 
     role, text = _pick_role({
         "intent": intent, "final_answer": final_answer, "exec_ok": exec_ok,
-        "document_path": document_path})
+        "document_path": document_path, "chart_path": chart_path,
+        "chart_spec": chart_spec, "email_draft": email_draft})
     emit({"type": "meta", "intent": intent, "role": role or "verbatim"})
 
     lang = language_for(question)

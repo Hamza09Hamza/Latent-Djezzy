@@ -671,9 +671,16 @@ def communicator_node(state: dict) -> dict:
         # Fixed, language-matched deflection — never sent to the polisher.
         answer = _OFFTOPIC_TEXT.get(lang_code(state["query"]), _OFFTOPIC_TEXT["en"])
     elif not answer:
-        if state.get("document_path"):
+        if state.get("chart_spec") or state.get("chart_path"):
+            # Chart built from last_rows on a "now chart it" follow-up — no SQL
+            # this turn, so final_answer is empty. Speak the success, never the
+            # "couldn't match" fallback (which contradicted the rendered chart).
+            answer = "Here's the chart of the previous result."
+        elif state.get("document_path"):
             # Template ran using last_rows from a prior turn — no SQL this turn.
             answer = "Report generated from the previous query result."
+        elif state.get("email_draft"):
+            answer = "I've drafted the email from the previous result."
         else:
             # No usable answer and no artifact. This is reached when the
             # router classified the query as non-data (e.g. an out-of-schema
