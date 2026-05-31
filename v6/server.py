@@ -313,11 +313,19 @@ def _build_app():
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
-        if socket.query_params.get("token") != API_TOKEN:
+        # Accept the handshake FIRST, then authenticate. Closing a WebSocket
+        # *before* accept() makes the client see an opaque "HTTP 403" during
+        # the upgrade — undebuggable in a browser and indistinguishable from
+        # an ngrok/proxy block. Accepting first guarantees a 101, after which
+        # we can send a readable error and a close code the client can read.
+        await socket.accept()
+        token = socket.query_params.get("token")
+        if token != API_TOKEN:
+            await socket.send_json({"type": "error",
+                                    "text": "unauthorized — API token mismatch"})
             await socket.close(code=4401)
             return
-        await socket.accept()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             while True:
                 msg = await socket.receive_json()
