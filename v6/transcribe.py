@@ -109,6 +109,7 @@ _WILAYA_ALIASES = {
     # (algiers→alger is only 83 < 90) or are initialisms fuzzy can't reach
     # (bjl→bejaia is 44). Exact-matched, so zero false-positive risk.
     "algiers": "Alger", "altiers": "Alger", "algier": "Alger",
+    "algae": "Alger", "algar": "Alger",
     "bejaya": "Bejaia", "bgayet": "Bejaia",
 }
 
@@ -116,7 +117,8 @@ _WILAYA_ALIASES = {
 # min_key_chars guard. Applied as exact, case-insensitive whole-word swaps
 # BEFORE the fuzzy passes. Only unambiguous, observed forms — never guesses.
 _WILAYA_SHORT = {
-    "bjl": "Bejaia",   # observed STT initialism for Bejaia
+    "bjl": "Bejaia",   # observed STT initialisms / airport codes for Bejaia
+    "bja": "Bejaia",   # BJA is the IATA code for Béjaïa airport
     "alg": "Alger",
     "cne": "Constantine",
 }

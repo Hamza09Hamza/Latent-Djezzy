@@ -224,6 +224,30 @@ _CROSST_CHART_QS = [
     "graphique", "maintenant un graphique", "montre-moi un graphique",
 ]
 
+# Continuation prefixes — words that START a follow-up turn. They appear on
+# BOTH a bare cross-turn chart ("now plot this") and a fresh contentful chart
+# ("now plot the churn rate of Alger and Oran across 2025"). The prefix alone
+# must NOT decide the route — what follows it does. These are used to build
+# fresh-query chart traces (gold rag→sql→chart) so the brain learns the prefix
+# is not a signal to reuse the previous result.
+_CONT_PREFIX = [
+    "now", "now please", "could you now please", "could you also",
+    "next", "then", "also", "and now", "ok now", "now show me",
+    "maintenant", "et maintenant", "ensuite", "peux-tu maintenant",
+    "et aussi", "puis",
+]
+
+# Chart-context memory — the previous turn produced a CHART. This is the exact
+# situation that fooled the brain: a recent chart in memory + a "now plot…"
+# request. Pairing this memory with a FRESH contentful query (gold rag→sql→
+# chart) teaches it not to collapse to "chart the previous result".
+_CHART_MEMORY = [
+    "Q: {q}\nA: line chart of the revenue trend rendered (8 points)",
+    "Q: {q}\nA: chart of the previous result produced",
+    "Q: {q}\nA: bar chart across wilayas rendered",
+    "Q: {q}\nA: 9 rows charted as a trend line",
+]
+
 # Performance / executive-report queries — map to fpa_profitability + global_revenue
 _PERFORMANCE_QUERIES = [
     "Q4 {t} performance summary", "Q3 {t} performance review",
@@ -576,6 +600,27 @@ def build_dataset(seed: int = 0) -> list[dict]:
         q = rng.choice(_CROSST_CHART_QS)
         _terminal(rows, "data", q, mem, [_chart(ok=True)])
 
+    # ── fresh contentful chart with a continuation prefix (the BJA/Algae bug) ──
+    # "could you now please plot the churn rate of Alger and Oran across 2025"
+    # starts like a chart follow-up AND has a recent chart in memory, but it
+    # names a NEW metric/entities/period → it MUST run rag→sql→chart, not reuse
+    # the previous result. The contrast with the bare-deictic cross-turn block
+    # above is exactly what teaches the brain to read the content, not the
+    # "now plot…" prefix or the chart-y memory. Both chart and data memory are
+    # used so neither context biases the route.
+    _mixed_mem = _data_memory + _CHART_MEMORY
+    for _ in range(450):
+        viz = rng.choice(_VIZ_WRAP).format(q=pick())     # full query inside
+        q = _norm(f"{rng.choice(_CONT_PREFIX)} {viz}")
+        mem = rng.choice(_mixed_mem).format(q=pick())
+        _expand(rows, "data", q, mem, [_rag(), _sql_ok(), _chart()])
+    # terminal stop after the fresh chart succeeds
+    for _ in range(250):
+        viz = rng.choice(_VIZ_WRAP).format(q=pick())
+        q = _norm(f"{rng.choice(_CONT_PREFIX)} {viz}")
+        mem = rng.choice(_mixed_mem).format(q=pick())
+        _terminal(rows, "data", q, mem, [_rag(), _sql_ok(), _chart(ok=True)])
+
     # ── performance / executive-report traces ────────────────────────────
     # These map broad "Q4 performance", "quarterly results" etc. to the
     # fpa_profitability + global_revenue tables. The gold sequence is
@@ -654,6 +699,14 @@ def build_dataset(seed: int = 0) -> list[dict]:
     for _ in range(150):
         q = rng.choice(_VIZ_WRAP_FR).format(q=pick_fr())
         _terminal(rows, "data", q, "", [_rag(), _sql_ok(), _chart(ok=True)])
+    # French fresh contentful chart with a continuation prefix + chart memory
+    # ("maintenant trace le taux de désabonnement d'Alger et Oran sur 2025") —
+    # the French twin of the BJA/Algae fix: stays rag→sql→chart, not reuse.
+    for _ in range(180):
+        viz = rng.choice(_VIZ_WRAP_FR).format(q=pick_fr())
+        q = _norm(f"{rng.choice(_CONT_PREFIX)} {viz}")
+        mem = rng.choice(_mixed_mem).format(q=pick())
+        _expand(rows, "data", q, mem, [_rag(), _sql_ok(), _chart()])
     # French data + email
     for _ in range(110):
         _expand(rows, "data", rng.choice(_EMAIL_WRAP_FR).format(q=pick_fr()),
