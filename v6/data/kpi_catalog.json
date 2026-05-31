@@ -870,13 +870,16 @@
     ]
   },
   {
+    "id": 60,
     "column": "contribution_margin_b2c",
-    "unit": "DZD",
+    "table": "fpa_profitability",
     "description": "Contribution margin of the B2C segment in DZD",
+    "segment": "b2c",
+    "unit": "DZD",
     "synonyms": [
-      "b2c margin",
-      "consumer margin",
-      "b2c contribution"
+      "b2c contribution margin",
+      "marge contribution B2C",
+      "consumer margin"
     ]
   }
 ]

@@ -173,13 +173,18 @@ def build_chunks() -> list[dict]:
     # kpi_catalog.json — multilingual synonyms + use-case query patterns
     if os.path.isfile(V6Config.KPI_CATALOG_PATH):
         for e in _load_json(V6Config.KPI_CATALOG_PATH):
+            # A catalog entry needs at least a table + column to be indexable;
+            # skip (don't crash the whole knowledge build) on a malformed one.
+            table, column = e.get("table"), e.get("column")
+            if not table or not column:
+                continue
             syn = ", ".join(e.get("synonyms", []))
             use_cases = e.get("use_cases", [])
             use_case_str = (f" Use when asked about: {', '.join(use_cases)}."
                             if use_cases else "")
             chunks.append({
-                "kind": "kpi", "table": e["table"], "column": e["column"],
-                "text": (f"KPI '{e['column']}' in table {e['table']} "
+                "kind": "kpi", "table": table, "column": column,
+                "text": (f"KPI '{column}' in table {table} "
                          f"(segment {e.get('segment', '-')}, unit "
                          f"{e.get('unit', '-')}). "
                          f"{e.get('description', '').rstrip('.')}. "
