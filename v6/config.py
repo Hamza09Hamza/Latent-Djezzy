@@ -184,6 +184,17 @@ class V6Config:
     TTS_TOP_P              = float(_env("TTS_TOP_P", "0.8"))
     TTS_ENABLE_SPLITTING   = _env("TTS_ENABLE_SPLITTING", "1") == "1"
 
+    # Voice-cloning conditioning. XTTS's get_conditioning_latents defaults to
+    # gpt_cond_len=6 — it listens to only the FIRST 6 SECONDS of the reference
+    # to learn the voice, even when the reference is 30–60s. Feeding it more
+    # reference audio (and normalizing the reference loudness) yields a richer,
+    # steadier, more human clone at zero extra runtime cost — the latents are
+    # computed once per language and cached. This is the single biggest local
+    # quality lever short of re-recording the reference itself.
+    TTS_GPT_COND_LEN   = int(_env("TTS_GPT_COND_LEN", "30"))    # seconds of ref used
+    TTS_MAX_REF_LEN    = int(_env("TTS_MAX_REF_LEN", "60"))     # cap on ref length
+    TTS_SOUND_NORM_REFS = _env("TTS_SOUND_NORM_REFS", "1") == "1"  # normalize ref loudness
+
     # Benchmark fixtures
     BENCH_QUERIES_PATH = os.path.join(DATA_DIR, "bench_queries.json")
 
@@ -303,6 +314,26 @@ class V6Config:
                 return os.path.join(d, name)
             fallback = fallback or os.path.join(d, name)
         return fallback
+
+    @classmethod
+    def any_speaker_wav(cls, prefer_gender: bool = True) -> str:
+        """Return SOME cloned reference WAV regardless of language, preferring
+        the configured gender. Used so a language with no own reference (e.g.
+        Arabic, when only French/English references exist) is still spoken in
+        the SAME cloned voice rather than an unrelated built-in studio speaker —
+        XTTS gets pronunciation from the language code, timbre from the
+        reference, so one reference voice can speak all three languages."""
+        for lang in ("fr", "en", "ar"):
+            w = cls.speaker_wav(lang)
+            if w and os.path.isfile(w):
+                return w
+        # gender-agnostic last resort: any voice file in the directory
+        d = cls.TTS_VOICE_DIR
+        if d and os.path.isdir(d):
+            for name in sorted(os.listdir(d)):
+                if name.lower().endswith(cls._VOICE_EXT):
+                    return os.path.join(d, name)
+        return ""
 
     @classmethod
     def reference_date(cls):

@@ -253,19 +253,35 @@ class TTS:
         torchaudio.save(out, wav, V6Config.TTS_SAMPLE_RATE)
         return out
 
-    def _latents(self, language: str):
-        """Conditioning latents for a language's configured voice (cached).
+    def _clone_latents(self, wav_path: str):
+        """Conditioning latents from a reference WAV. Passes the quality knobs
+        (more reference seconds + loudness norm) when the installed XTTS build
+        accepts them, falling back to the bare call if the signature differs."""
+        ref = self._ensure_wav(wav_path)
+        try:
+            return self.xtts.get_conditioning_latents(
+                audio_path=[ref],
+                gpt_cond_len=V6Config.TTS_GPT_COND_LEN,
+                max_ref_length=V6Config.TTS_MAX_REF_LEN,
+                sound_norm_refs=V6Config.TTS_SOUND_NORM_REFS)
+        except TypeError:
+            # Older/newer XTTS with a different signature — use the safe default.
+            return self.xtts.get_conditioning_latents(audio_path=[ref])
 
-        Prefers a cloned reference voice (V6Config.speaker_wav picks one from
-        v6/audio by language + gender); falls back to the built-in studio
-        speaker name when no reference is found.
+    def _latents(self, language: str):
+        """Conditioning latents for a language's voice (cached).
+
+        Resolution: a reference WAV for THIS language → ANY cloned reference
+        WAV (so e.g. Arabic, with no own recording, is still spoken in the same
+        cloned voice instead of an unrelated English studio speaker — XTTS gets
+        pronunciation from the language code, timbre from the reference) → the
+        built-in studio speaker only when no reference exists at all.
         """
         if language in self._latent_cache:
             return self._latent_cache[language]
-        wav = V6Config.speaker_wav(language)
+        wav = V6Config.speaker_wav(language) or V6Config.any_speaker_wav()
         if wav and os.path.isfile(wav):
-            gpt_latent, spk_emb = self.xtts.get_conditioning_latents(
-                audio_path=[self._ensure_wav(wav)])
+            gpt_latent, spk_emb = self._clone_latents(wav)
         else:
             name = V6Config.TTS_SPEAKER_FR if language == "fr" else V6Config.TTS_SPEAKER_EN
             sp = self.xtts.speaker_manager.speakers[name]

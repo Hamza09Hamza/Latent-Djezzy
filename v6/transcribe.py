@@ -105,7 +105,31 @@ _WILAYA_ALIASES = {
     "tizi wuzu": "Tizi Ouzou", "tizi ouzu": "Tizi Ouzou",
     "tlemcem": "Tlemcen", "tlemsen": "Tlemcen",
     "wahran": "Oran", "oualid djellal": "Ouled Djellal",
+    # English exonyms + observed mishears that score BELOW the fuzzy threshold
+    # (algiers→alger is only 83 < 90) or are initialisms fuzzy can't reach
+    # (bjl→bejaia is 44). Exact-matched, so zero false-positive risk.
+    "algiers": "Alger", "altiers": "Alger", "algier": "Alger",
+    "bejaya": "Bejaia", "bgayet": "Bejaia",
 }
+
+# Short exonyms/initialisms (< 4 chars) the n-gram alias pass skips by its
+# min_key_chars guard. Applied as exact, case-insensitive whole-word swaps
+# BEFORE the fuzzy passes. Only unambiguous, observed forms — never guesses.
+_WILAYA_SHORT = {
+    "bjl": "Bejaia",   # observed STT initialism for Bejaia
+    "alg": "Alger",
+    "cne": "Constantine",
+}
+_SHORT_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _WILAYA_SHORT) + r")\b",
+    re.IGNORECASE)
+
+
+def correct_short_aliases(text: str) -> str:
+    """Swap known short exonyms/initialisms ('BJL'→'Bejaia') by exact match."""
+    if not text:
+        return text
+    return _SHORT_RE.sub(lambda m: _WILAYA_SHORT[m.group(1).lower()], text)
 
 # Quarter / period normalization. Whisper often welds "Q4 2025" into "QQ425"
 # or scatters it ("Q 4 2025"); a mangled period changes the SQL date window
@@ -279,5 +303,6 @@ def correct_transcript(text: str) -> str:
     if not text:
         return text
     text = correct_periods(text)
+    text = correct_short_aliases(text)   # initialisms first (BJL→Bejaia)
     text = correct_wilaya_aliases(text)
     return correct_kpis(correct_wilayas(text))
