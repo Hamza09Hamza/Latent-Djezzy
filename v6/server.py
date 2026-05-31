@@ -7,6 +7,8 @@ EVERYTHING runs server-side — STT, brain, SLM, polisher, TTS — because the
 browser can't run your cloned XTTS voice or the Qwen/BGE models. Over one
 WebSocket the client receives, in order:
 
+    {type:"transcript", text}            voice only — what STT heard, FIRST,
+                                         so the user sees their words at once
     {type:"thinking", text}              the 💭 trace, as the brain works
     {type:"meta", intent, role}          how the answer will be produced
     {type:"token", text}                 the answer text, streamed
@@ -15,6 +17,11 @@ WebSocket the client receives, in order:
     {type:"artifact", kind, ...}         chart / report / email pointers
     {type:"answer", text}                the full final text
     {type:"done"}
+
+The client sends one JSON frame to start a turn — either text or voice:
+    {question:"...", thread:"..."}                  text in
+    {audio:"<base64>", format:"webm", thread:"..."} voice in (STT runs server-side)
+Both stream back identically; voice additionally gets the {transcript} event.
 
 Design notes:
   - **Single GPU** → requests are serialized with an asyncio lock; the blocking
@@ -112,6 +119,22 @@ def _pcm16_b64(chunk) -> str:
     import numpy as np
     x = np.clip(np.asarray(chunk, dtype="float32"), -1.0, 1.0)
     return base64.b64encode((x * 32767.0).astype("<i2").tobytes()).decode("ascii")
+
+
+def _transcribe_b64(audio_b64: str, fmt: str = "webm") -> str:
+    """Decode a base64 audio clip and return its STT transcription. Blocking
+    (runs the STT model) — call it from the worker thread, under the GPU lock.
+    Mirrors the /ask_voice temp-file approach so STT sees the same container."""
+    from .speech import get_stt
+    raw = base64.b64decode(audio_b64)
+    suffix = "." + (fmt or "webm").split(";")[0].split("/")[-1].lstrip(".")
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as fh:
+        fh.write(raw)
+        path = fh.name
+    try:
+        return (get_stt().transcribe(path).get("text") or "").strip()
+    finally:
+        os.unlink(path)
 
 
 # ── the pipeline (sync) — emits events through a callback ────────────────────
@@ -348,10 +371,13 @@ def _build_app():
         try:
             while True:
                 msg = await socket.receive_json()
-                question = (msg or {}).get("question", "").strip()
-                if not question:
+                text_q = (msg or {}).get("question", "").strip()
+                audio_b64 = (msg or {}).get("audio")
+                audio_fmt = (msg or {}).get("format", "webm")
+                if not text_q and not audio_b64:
                     await socket.send_json(
-                        {"type": "error", "text": "send {question: '...'}"})
+                        {"type": "error",
+                         "text": "send {question:'...'} or {audio:'<base64>'}"})
                     continue
                 thread = (msg or {}).get("thread", "web")
                 queue: asyncio.Queue = asyncio.Queue()
@@ -359,9 +385,24 @@ def _build_app():
                 def emit(ev):
                     loop.call_soon_threadsafe(queue.put_nowait, ev)
 
-                def worker():
+                # Bind the per-turn inputs as defaults so the worker closure
+                # can't race a later loop iteration (we await `fut` before the
+                # next receive, but this is the safe, explicit form).
+                def worker(_text=text_q, _audio=audio_b64, _fmt=audio_fmt,
+                           _thread=thread):
                     try:
-                        _run_pipeline(question, thread, emit, want_audio=True)
+                        question = _text
+                        if _audio:
+                            # Transcribe FIRST and surface the words immediately,
+                            # so a voice turn shows the user's text + the live
+                            # 💭 reasoning instead of going silent until the end.
+                            question = _transcribe_b64(_audio, _fmt)
+                            if not question:
+                                emit({"type": "error",
+                                      "text": "empty transcription — I couldn't hear that"})
+                                return
+                            emit({"type": "transcript", "text": question})
+                        _run_pipeline(question, _thread, emit, want_audio=True)
                     except Exception as exc:  # noqa: BLE001
                         emit({"type": "error", "text": str(exc)})
                     finally:

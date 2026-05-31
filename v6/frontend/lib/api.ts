@@ -1,11 +1,13 @@
 // ============================================================================
 //  V6 frontend — client for v6/server.py
 //
-//  Two paths, mapping 1:1 to the server's contract:
-//    • streamAsk()  → WS  /ws       text in, fully streamed out
-//                                   (thinking → meta → tokens → audio → done)
-//    • askVoice()   → POST /ask_voice  audio in, STT + answer + cloned audio
-//    • checkHealth()→ GET  /health     "is Colab up?" probe
+//  Streaming paths, mapping 1:1 to the server's contract:
+//    • streamAsk()   → WS /ws   text in, fully streamed out
+//                               (thinking → meta → tokens → audio → done)
+//    • streamVoice() → WS /ws   audio in; STT runs server-side and emits a
+//                               {transcript} first, then streams identically.
+//    • askVoice()    → POST /ask_voice  legacy non-streaming voice (buffered)
+//    • checkHealth() → GET  /health     "is Colab up?" probe
 // ============================================================================
 
 import {
@@ -67,6 +69,7 @@ export interface Artifact {
 
 export interface StreamHandlers {
   onOpen?: () => void;
+  onTranscript?: (text: string) => void; // voice only — what STT heard (first)
   onThinking?: (text: string) => void;
   onMeta?: (intent: string, role: string) => void;
   onToken?: (text: string) => void;
@@ -78,15 +81,15 @@ export interface StreamHandlers {
 }
 
 /**
- * Open a WebSocket to /ws, send the question, and dispatch streamed events.
- * Returns a `close()` you can call to abort. The socket closes itself on
- * `done`. Auth + token live in the URL query (browsers can't set WS headers).
+ * Open a /ws WebSocket, dispatch streamed events to the handlers, and send the
+ * opening frame once connected (text question or voice audio — `buildOpen`
+ * returns the JSON to send). Returns a `close()` to abort; the socket closes
+ * itself on `done`. Auth lives in the URL query (browsers can't set WS headers).
  */
-export function streamAsk(
+function openStream(
   cfg: ServerConfig,
-  question: string,
-  thread: string,
-  h: StreamHandlers
+  h: StreamHandlers,
+  buildOpen: () => Promise<string> | string
 ): () => void {
   let ws: WebSocket;
   try {
@@ -101,9 +104,16 @@ export function streamAsk(
 
   let closedByUs = false;
 
-  ws.onopen = () => {
+  ws.onopen = async () => {
     h.onOpen?.();
-    ws.send(JSON.stringify({ question, thread }));
+    try {
+      ws.send(await buildOpen());
+    } catch {
+      h.onError?.("Could not prepare the request to send.");
+      closedByUs = true;
+      ws.close();
+      h.onDone?.();
+    }
   };
 
   ws.onmessage = (e) => {
@@ -114,6 +124,9 @@ export function streamAsk(
       return;
     }
     switch (m.type) {
+      case "transcript":
+        h.onTranscript?.(m.text);
+        break;
       case "thinking":
         h.onThinking?.(m.text);
         break;
@@ -167,6 +180,46 @@ export function streamAsk(
       /* noop */
     }
   };
+}
+
+/** Strip the `data:<mime>;base64,` prefix a FileReader data URL carries. */
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const url = reader.result as string;
+      resolve(url.includes(",") ? url.slice(url.indexOf(",") + 1) : url);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Text question → WS /ws, fully streamed. */
+export function streamAsk(
+  cfg: ServerConfig,
+  question: string,
+  thread: string,
+  h: StreamHandlers
+): () => void {
+  return openStream(cfg, h, () => JSON.stringify({ question, thread }));
+}
+
+/**
+ * Voice question → WS /ws. The audio is sent as base64; the server transcribes
+ * it, emits {transcript} (→ onTranscript), then streams thinking/tokens/audio
+ * exactly like a text turn. Same UX as text, no buffered HTTP round-trip.
+ */
+export function streamVoice(
+  cfg: ServerConfig,
+  blob: Blob,
+  thread: string,
+  h: StreamHandlers
+): () => void {
+  const fmt = (blob.type.split("/")[1] || "webm").split(";")[0];
+  return openStream(cfg, h, async () =>
+    JSON.stringify({ audio: await blobToBase64(blob), format: fmt, thread })
+  );
 }
 
 export interface VoiceResult {

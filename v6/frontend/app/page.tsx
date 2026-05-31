@@ -17,7 +17,7 @@ import {
   ServerConfig,
   DEFAULT_CONFIG,
 } from "@/lib/config";
-import { streamAsk, askVoice, checkHealth } from "@/lib/api";
+import { streamAsk, streamVoice, checkHealth } from "@/lib/api";
 
 type ConnState = "unknown" | "checking" | "online" | "offline";
 
@@ -146,7 +146,10 @@ export default function DjezzyAssistant() {
     );
   }
 
-  // ── voice question → /ask_voice (STT + answer + cloned audio) ──────────────
+  // ── voice question → WebSocket stream (STT + reasoning + answer + audio) ───
+  // Same streaming path as text: the transcript lands first (so the user sees
+  // their words), then 💭 reasoning, tokens, and cloned-voice audio stream in —
+  // instead of going silent until the whole turn finishes.
   async function handleVoice(blob: Blob) {
     if (!isConfigured(config)) {
       toast.error("Set the ngrok URL + API token in Settings first.");
@@ -154,51 +157,62 @@ export default function DjezzyAssistant() {
       return;
     }
     setIsProcessing(true);
+
+    const userId = newId();
+    const userMsg: Message = {
+      id: userId,
+      role: "user",
+      text: "🎙 Transcribing…",
+      thinking: [],
+      artifacts: [],
+    };
+    const botId = newId();
+    const botMsg: Message = {
+      id: botId,
+      role: "assistant",
+      text: "",
+      thinking: [],
+      artifacts: [],
+      streaming: true,
+    };
+    setMessages((prev) => [...prev, userMsg, botMsg]);
+
     const player = playerRef.current!;
     await player.resume();
     player.reset();
-    try {
-      const res = await askVoice(config, blob);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: newId(),
-          role: "user",
-          text: res.question || "(could not transcribe)",
-          thinking: [],
-          artifacts: [],
-        },
-        {
-          id: newId(),
-          role: "assistant",
-          text: res.answer,
-          thinking: res.thinking || [],
-          intent: res.intent,
-          artifacts: res.artifacts || [],
-          audioChunks: res.audio_pcm16_b64?.length || 0,
-        },
-      ]);
-      if (res.audio_pcm16_b64?.length) {
-        player.pushAll(res.audio_pcm16_b64, res.sample_rate);
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Voice request failed";
-      toast.error(msg);
-      if (/unauthorized/i.test(msg)) setConn("offline");
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: newId(),
-          role: "assistant",
-          text: msg,
-          thinking: [],
-          artifacts: [],
-          error: true,
-        },
-      ]);
-    } finally {
-      setIsProcessing(false);
-    }
+
+    closeStreamRef.current = streamVoice(config, blob, threadRef.current, {
+      onTranscript: (t) =>
+        patch(userId, (m) => ({ ...m, text: t || "(could not transcribe)" })),
+      onThinking: (t) =>
+        patch(botId, (m) => ({ ...m, thinking: [...m.thinking, t] })),
+      onMeta: (intent, role) =>
+        patch(botId, (m) => ({ ...m, intent, polishRole: role })),
+      onToken: (t) => patch(botId, (m) => ({ ...m, text: m.text + t })),
+      onAudio: (b64, sr) => {
+        player.push(b64, sr);
+        patch(botId, (m) => ({ ...m, audioChunks: (m.audioChunks || 0) + 1 }));
+      },
+      onArtifact: (a) =>
+        patch(botId, (m) => ({ ...m, artifacts: [...m.artifacts, a] })),
+      onAnswer: (text) => patch(botId, (m) => ({ ...m, text: text || m.text })),
+      onError: (text) => {
+        patch(botId, (m) => ({ ...m, error: true, text: m.text || text }));
+        toast.error(text);
+        if (/unauthorized|server url|colab/i.test(text)) setConn("offline");
+      },
+      onDone: () => {
+        patch(botId, (m) => ({ ...m, streaming: false }));
+        // STT never spoke up → clear the placeholder so it doesn't linger
+        patch(userId, (m) =>
+          m.text === "🎙 Transcribing…"
+            ? { ...m, text: "(could not transcribe)" }
+            : m
+        );
+        setIsProcessing(false);
+        closeStreamRef.current = null;
+      },
+    });
   }
 
   async function handleMicClick() {
