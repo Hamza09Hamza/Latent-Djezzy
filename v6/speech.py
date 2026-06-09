@@ -208,6 +208,7 @@ class TTS:
     """
 
     def __init__(self):
+        self._patch_transformers_compat()
         self._patch_torch_load()
         from TTS.api import TTS as CoquiTTS
 
@@ -218,6 +219,26 @@ class TTS:
         self.xtts = api.synthesizer.tts_model
         self.sample_rate = V6Config.TTS_SAMPLE_RATE
         self._latent_cache: dict = {}          # lang → (gpt_latent, spk_emb)
+
+    @staticmethod
+    def _patch_transformers_compat() -> None:
+        """Coqui TTS imports `isin_mps_friendly` from transformers.pytorch_utils.
+        Our SLM (Qwen3) pins a recent transformers where that symbol was
+        moved/removed, so the import fails. Re-provide it before TTS loads.
+        No-op if transformers already exports it. The CUDA/CPU path just wraps
+        torch.isin; the MPS branch mirrors the original helper."""
+        try:
+            import transformers.pytorch_utils as _pu
+            if not hasattr(_pu, "isin_mps_friendly"):
+                def isin_mps_friendly(elements, test_elements):
+                    if elements.device.type == "mps":
+                        te = torch.as_tensor(
+                            test_elements, device=elements.device).flatten()
+                        return elements.unsqueeze(-1).eq(te).any(dim=-1)
+                    return torch.isin(elements, test_elements)
+                _pu.isin_mps_friendly = isin_mps_friendly
+        except Exception:  # noqa: BLE001 — best-effort shim, never fatal
+            pass
 
     @staticmethod
     def _patch_torch_load() -> None:

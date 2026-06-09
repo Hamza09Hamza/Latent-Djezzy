@@ -81,7 +81,12 @@ Voice quality is tuned via the `V6_TTS_*` knobs; cloning a reference WAV
 
 ## Capabilities
 
-- **chart** — matplotlib (line for trends, bar for comparisons), saved to disk.
+- **chart** — emits a typed JSON spec ([chartspec.py](chartspec.py)) the web
+  client renders as an interactive Recharts chart; the type is picked from the
+  data shape + the executed SQL + the question (ranking→sorted bar, trend→line,
+  share→donut, single KPI→stat). Figures are pre-frozen by `numfmt`, so the
+  chart can't re-round a number. A matplotlib PNG is still saved as a fallback
+  for the notebook and reports.
 - **template** — a Jinja2 report ([templates/report.md.j2](templates/report.md.j2))
   filled with the data and written to disk.
 - **email** — resolves a recipient from the `contacts` table and **drafts** an
@@ -185,7 +190,8 @@ uvicorn v6.server:app --host 0.0.0.0 --port 8000   # locally
 | [numfmt.py](numfmt.py) | deterministic number humanization (the figure trust boundary) |
 | [prompts.py](prompts.py) | router / SQL prompts + parsing |
 | [sql_tools.py](sql_tools.py) | SQL safety, consistency check, execution |
-| [capabilities.py](capabilities.py) | chart / email-draft / report |
+| [capabilities.py](capabilities.py) | chart PNG / email-draft / report |
+| [chartspec.py](chartspec.py) | data → typed JSON chart spec (the web chart) |
 | [speech.py](speech.py) | STT + TTS + `speakable()` |
 | [server.py](server.py) | FastAPI + WebSocket server (streams text + cloned audio) |
 | [benchmark.py](benchmark.py) | text + voice benchmark harness |
