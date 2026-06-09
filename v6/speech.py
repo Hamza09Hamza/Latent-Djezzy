@@ -222,11 +222,22 @@ class TTS:
 
     @staticmethod
     def _patch_transformers_compat() -> None:
-        """Coqui TTS imports `isin_mps_friendly` from transformers.pytorch_utils.
-        Our SLM (Qwen3) pins a recent transformers where that symbol was
-        moved/removed, so the import fails. Re-provide it before TTS loads.
-        No-op if transformers already exports it. The CUDA/CPU path just wraps
-        torch.isin; the MPS branch mirrors the original helper."""
+        """Bridge Coqui XTTS to the recent transformers our SLM (Qwen3) pins.
+
+        Coqui's TTS package was written against an older transformers and
+        breaks against new ones in two places; both are best-effort, never
+        fatal:
+
+        1. It imports `isin_mps_friendly` from transformers.pytorch_utils,
+           a symbol moved/removed in recent versions — re-provide it (CUDA/CPU
+           path wraps torch.isin; the MPS branch mirrors the original helper).
+        2. Its custom `GPT2InferenceModel` predates the transformers
+           generate() refactor and is missing newer GenerationMixin hooks
+           (e.g. `_get_initial_cache_position`). Borrow the missing methods
+           from the *installed* GenerationMixin so the signatures match the
+           running transformers exactly.
+        """
+        # (1) isin_mps_friendly
         try:
             import transformers.pytorch_utils as _pu
             if not hasattr(_pu, "isin_mps_friendly"):
@@ -237,6 +248,24 @@ class TTS:
                         return elements.unsqueeze(-1).eq(te).any(dim=-1)
                     return torch.isin(elements, test_elements)
                 _pu.isin_mps_friendly = isin_mps_friendly
+        except Exception:  # noqa: BLE001 — best-effort shim, never fatal
+            pass
+
+        # (2) GenerationMixin hooks missing on XTTS's GPT2InferenceModel
+        try:
+            from transformers.generation.utils import GenerationMixin
+            from TTS.tts.layers.xtts.gpt_inference import GPT2InferenceModel
+            for _hook in (
+                "_get_initial_cache_position",
+                "_prepare_cache_for_generation",
+                "_get_cache",
+                "_supports_default_dynamic_cache",
+                "prepare_inputs_for_generation",
+            ):
+                if (not hasattr(GPT2InferenceModel, _hook)
+                        and hasattr(GenerationMixin, _hook)):
+                    setattr(GPT2InferenceModel, _hook,
+                            getattr(GenerationMixin, _hook))
         except Exception:  # noqa: BLE001 — best-effort shim, never fatal
             pass
 
