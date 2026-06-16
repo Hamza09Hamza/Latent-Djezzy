@@ -56,9 +56,10 @@ stage:
 - **Cross-turn memory** (NOT reset between turns): `turns` (last 2 raw turns with
   their tables/columns), `memory_summary` (compacted older turns), `last_rows` /
   `last_columns` (for follow-up reports), `carried_entities`.
-- **Brain loop:** `brain_step`, `step_log` (one outcome dict per executed action),
-  `intent` (decided at step 0, held all turn), `next_action`, `continue_score`,
-  `brain_scores`.
+- **Brain loop:** `brain_step`, `step_log` (one outcome dict per executed action —
+  see [The Brain §2](04-the-brain.md) for the exact dict schema and the tick-by-tick
+  example of how it builds up), `intent` (decided at step 0, held all turn),
+  `next_action`, `continue_score`, `brain_scores`.
 - **Retrieval:** `knowledge` (the RAG block), `grounding` (max non-wilaya cosine).
 - **SQL pipeline:** `router_raw`, `routing`, `feedback`, `entities`, `sql`,
   `sql_valid`, `sql_issues`, `rows`, `columns`, `exec_ok`.

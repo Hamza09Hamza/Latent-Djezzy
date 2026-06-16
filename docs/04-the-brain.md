@@ -65,6 +65,77 @@ and clarify — *with no `if` statement in the graph.* `encode_outcome` is the s
 source of truth for this vector, imported by both the live brain and the trace
 synthesizer, so training and inference featurize identically.
 
+### What a `step_log` entry looks like
+
+Every action node appends **exactly one dict** to `step_log` before returning
+control to the brain. The schema is fixed across all action types:
+
+```python
+{
+  "action":     "rag" | "sql" | "chart" | "email" | "template",
+  "ok":         True | False,          # did the action succeed?
+  "error_type": "none" | "sql_error" | "sql_no_rows" | "sql_no_query"
+               | "email_no_recipient" | "artifact_failed" | "rag_weak",
+  "row_bucket": "none" | "zero" | "one" | "many",  # meaningful for sql only
+  "attempt":    int,                   # 1-indexed retry count for this action type
+}
+```
+
+`_attempt(state, action)` counts how many prior `step_log` entries share the same
+`action` field and adds 1 — so the first SQL call is `attempt=1`, the retry is
+`attempt=2`, capped at 3 in the normalized feature.
+
+### The two-level history design
+
+`encode_outcome` deliberately reads `step_log` at **two levels**:
+
+- **Last-step features** (`last = step_log[-1]`): `action`, `ok`, `error_type`,
+  `row_bucket`, `attempt` — what just happened, so the brain can react.
+- **Full-history feature** (`done = {s["action"] for s in step_log}`): multi-hot
+  over all five actions across *every* prior step — so the brain knows what has
+  already been done this turn and won't re-run RAG it already ran.
+
+The result is that tick 0 (empty list) is the all-zeros "nothing done yet" vector,
+and each subsequent tick shifts exactly the bits that changed.
+
+### Tick-by-tick example
+
+Query: *"Send the margin chart for Alger to the regional manager"*
+
+```
+tick 0  step_log=[]
+        outcome → all zeros (nothing done)
+        brain → intent=data, action=rag, continue=0.98
+
+rag runs → appends {"action":"rag","ok":True,"error_type":"none","row_bucket":"none","attempt":1}
+
+tick 1  step_log=[rag:ok]
+        last-action=rag, last-ok=1, error=none, done={rag}
+        brain → action=sql, continue=0.97
+
+sql runs → appends {"action":"sql","ok":True,"error_type":"none","row_bucket":"many","attempt":1}
+
+tick 2  step_log=[rag:ok, sql:ok,many]
+        last-action=sql, last-ok=1, row-bucket=many, done={rag,sql}
+        brain → action=chart, continue=0.95
+
+chart runs → appends {"action":"chart","ok":True,"error_type":"none","row_bucket":"none","attempt":1}
+
+tick 3  step_log=[rag:ok, sql:ok,many, chart:ok]
+        last-action=chart, last-ok=1, done={rag,sql,chart}
+        brain → action=email, continue=0.91
+
+email runs (recipient found) → appends {"action":"email","ok":True,"error_type":"none",...}
+
+tick 4  step_log=[rag:ok, sql:ok,many, chart:ok, email:ok]
+        done={rag,sql,chart,email}
+        brain → continue=0.02 < seuil → communicator
+```
+
+The brain never saw a Python `if`-statement telling it to chain these actions; the
+training traces taught it that this combination of outcome bits means "keep going"
+until the terminal clears and the continue score drops.
+
 ---
 
 ## 3. The model (`BrainHead`)
