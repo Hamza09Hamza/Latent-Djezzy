@@ -4,8 +4,7 @@ Latent-Djezzy is an experimental multilingual analytics assistant developed as p
 
 The project explores how an AI assistant can help users query business KPI data using natural language, while keeping database access, numerical formatting, and tool execution under deterministic controls.
 
-> This repository represents internship and research/development work. It should not be interpreted as an official Djezzy product, public service, endorsement, or production deployment. Any environment-specific data, credentials, infrastructure details, and internal business information must remain outside the public repository.
-
+> This repository represents internship and research/development work. It should not be interpreted as an official Djezzy product, public service, endorsement, or production deployment. 
 ## Current implementation
 
 The current implementation is **LatentMind V6**, located under [`v6/`](v6/).
